@@ -1,1 +1,21 @@
-target/
+# ビルド成果物・バックアップ・一時ファイル
+/target*/
+/backup_*/
+/jpsim.zip
+/x_tmp*.json
+__pycache__/
+*.pyc
+# cache は必要なものだけ入れる（レース入力・サーバーのフレームと、調査の結果ファイル）
+/cache/*
+!/cache/races/
+!/cache/statgroup.json
+!/cache/crit2.json
+!/cache/crit2.jsonl
+!/cache/exact2.json
+!/cache/rscan.jsonl
+!/cache/bnd.json
+!/cache/ns_accsep.json
+# レースは入力（*.json）とサーバーのフレーム（*.srv.json）だけ
+/cache/races/*
+!/cache/races/*.json
+/cache/races/*.sim.json

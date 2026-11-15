@@ -11,19 +11,20 @@ pub struct Course {
     pub lane_max: f32, pub master: Value, pub events: Vec<Event>,
     pub corners: Vec<Segment>, pub straights: Vec<Segment>, pub slopes: Vec<Segment>,
     pub first_move: f32, pub empty_in_move: bool,
+    pub last_straight: Option<Segment>,
 }
 impl Course {
     pub fn load(assets: &Assets, id: i32) -> Result<Self, String> {
         let cs = assets.course_set(id);
-        if cs.is_null() { return Err(format!("missing Global course {id}")); }
+        if cs.is_null() { return Err(format!("missing course {id}")); }
         let m = &cs["master"];
         let mut c = Self { id, distance: m["distance"].as_i64().ok_or("course distance")? as f32,
             ground: m["ground"].as_i64().ok_or("course ground")? as i32,
             turn: m["turn"].as_i64().ok_or("course turn")? as i32,
             lane_max: m["float_lane_max"].as_i64().ok_or("course lane maximum")? as f32 * 0.0001,
-            master: m.clone(), events: vec![], corners: vec![], straights: vec![], slopes: vec![],
+            master: m.clone(), events: vec![], corners: vec![], straights: vec![], slopes: vec![], last_straight: None,
             first_move: 0.0, empty_in_move: false };
-        let mut pending: Option<(f32, i32)> = None;
+        let mut pending: Option<(f32, i32, bool)> = None;
         for object in cs["event_asset"]["objects"].as_array().ok_or("course events")? {
             for p in object["fields"]["courseParams"].as_array().ok_or("courseParams")? {
                 let e = Event { kind: p["_paramType"].as_i64().ok_or("event type")? as i32,
@@ -34,9 +35,11 @@ impl Course {
                     (0, [number, rest @ ..]) => c.corners.push(Segment { start: e.distance,
                         end: e.distance + rest.first().copied().unwrap_or(200) as f32,
                         number: *number, per: 0.0 }),
-                    (2, [1, rest @ ..]) => pending = Some((e.distance, rest.first().copied().unwrap_or(0))),
-                    (2, [2, ..]) => { if let Some((start, number)) = pending.take() {
-                        c.straights.push(Segment { start, end: e.distance, number, per: 0.0 });
+                    (2, [1, rest @ ..]) => pending = Some((e.distance, rest.first().copied().unwrap_or(0), rest.get(1) == Some(&1))),
+                    (2, [2, ..]) => { if let Some((start, number, last)) = pending.take() {
+                        let seg = Segment { start, end: e.distance, number, per: 0.0 };
+                        if last { c.last_straight = Some(seg.clone()); }
+                        c.straights.push(seg);
                     } },
                     (11, [per, length]) => c.slopes.push(Segment { start: e.distance,
                         end: e.distance + *length as f32, number: per.signum(), per: *per as f32 / 10000.0 }),
@@ -55,6 +58,9 @@ impl Course {
         crate::netsort::sort(&mut c.events, &|a,b| {
             if a.distance < b.distance { -1 } else if a.distance > b.distance { 1 } else { 0 }
         });
+        if crate::envc::var_os("JPRACE_LOG_COURSE").is_some() {
+            for e in &c.events {eprintln!("course ev kind={} d={:.2} values={:?}", e.kind, e.distance, e.values);}
+        }
         Ok(c)
     }
     pub fn phase(&self, distance: f32) -> usize {
@@ -69,6 +75,10 @@ impl Course {
     }
     pub fn corner(&self, n: i32) -> Option<&Segment> {
         self.corners.iter().rev().find(|s| s.number == n && n > 0)
+    }
+    pub fn last_straight_start(&self) -> Option<f32> {
+        if crate::envc::var_os("JPRACE_LASTSTRAIGHT_OLD").is_none() && let Some(s) = &self.last_straight { return Some(s.start); }
+        self.final_corner().map(|s| s.end)
     }
     pub fn final_corner(&self) -> Option<&Segment> {
         self.corners.iter().rev().find(|s| s.number > 3 && self.distance-s.start <= 1000.0)

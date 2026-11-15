@@ -1,3 +1,4 @@
+use crate::math::PowX;
 pub const TICK: f32 = 0.0666;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -35,6 +36,7 @@ pub struct Params {
     pub top_requires_lead: u8,
     pub top_cohort: bool,
     pub top_end_exit: bool,
+    pub top_group_end: bool,
 }
 
 impl Default for Params {
@@ -50,7 +52,7 @@ impl Default for Params {
             fight_exit_hp_percent: 5.0, fight_exit_inclusive: true, fight_select_before_history: true,
             fight_speed: [200.0, 0.708, 0.0001],
             fight_accel: [160.0, 0.59, 0.0001], top_hp: [1.4, 3.6, 3.5, 7.7],
-            top_requires_lead: 1, top_cohort: false, top_end_exit: false,
+            top_requires_lead: 1, top_cohort: false, top_end_exit: false, top_group_end: false,
         }
     }
 }
@@ -80,7 +82,7 @@ impl State {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Change { TopEnter(usize), TopExit(usize), FightEnter(usize), FightExit(usize) }
 
-fn formula(guts: f32, c: [f32; 3]) -> f32 { (c[0] * guts.max(0.0)).powf(c[1]) * c[2] }
+fn formula(guts: f32, c: [f32; 3]) -> f32 { (c[0] * guts.max(0.0)).powx(c[1]) * c[2] }
 pub fn top_duration(r: &Runner, p: &Params) -> f32 {
     formula(r.guts, p.top_time) * r.strategy_proficiency
 }
@@ -152,6 +154,19 @@ pub fn step(old: &State, runners: &[Runner], course_distance: f32, dt: f32,
             } else { None };
         }
     }
+    if p.top_group_end {
+        for group in 0..2 {
+            let ended = (0..n).any(|i| old.modes[i].top && !next.modes[i].top && old.modes[i].top_group == Some(group) && runners[i].distance >= end);
+            if ended {
+                for i in 0..n {
+                    if next.modes[i].top && next.modes[i].top_group == Some(group) {
+                        next.modes[i].top = false;
+                        next.modes[i].top_distance_exit = true;
+                    }
+                }
+            }
+        }
+    }
     for group in 0..2 {
         let members: Vec<usize> = (0..n).filter(|&i| old.modes[i].top_group == Some(group)).collect();
         let live: Vec<usize> = members.iter().copied().filter(|&i| next.modes[i].top).collect();
@@ -169,6 +184,8 @@ pub fn step(old: &State, runners: &[Runner], course_distance: f32, dt: f32,
                 let leads = match p.top_requires_lead {
                     1 => runners[lead].rank == 1,
                     2 => runners.iter().all(|q| q.distance <= runners[lead].distance),
+                    3 => runners.iter().all(|q| q.style == Style::Oonige || q.distance <= runners[lead].distance),
+                    4 => runners.iter().all(|q| q.style == Style::Oonige || q.rank >= runners[lead].rank),
                     _ => true,
                 };
                 if !leads { continue; }

@@ -1,9 +1,9 @@
-use global_race_sim::{data::{Assets,Master,RaceIn},simulator::Simulator};
+use jp_race_sim::{data::{Assets,Master,RaceIn},simulator::Simulator};
 use std::path::PathBuf;
 use std::io::{BufRead,Write};
 fn run()->Result<(),String> {
     let mut args=std::env::args().skip(1);
-    let command=args.next().ok_or("usage: global_race_sim simulate --input FILE|--input-dir DIR --master FILE --assets FILE --output FILE|DIR; serve --master FILE --assets FILE")?;
+    let command=args.next().ok_or("usage: jp_race_sim simulate --input FILE|--input-dir DIR --master FILE --assets FILE --output FILE|DIR; serve --master FILE --assets FILE")?;
     if command!="simulate" && command!="serve" {return Err(format!("unknown command {command}"));}
     let mut input=None;let mut input_dir=None;let mut master=None;let mut assets=None;let mut output=None;let mut max_ticks=20000;
     while let Some(arg)=args.next() {
@@ -61,5 +61,5 @@ fn run()->Result<(),String> {
     Ok(())
 }
 fn main() {
-    if let Err(e)=run() {eprintln!("global_race_sim: {e}");std::process::exit(2);}
+    if let Err(e)=run() {eprintln!("jp_race_sim: {e}");std::process::exit(2);}
 }
