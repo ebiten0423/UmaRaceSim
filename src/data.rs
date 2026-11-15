@@ -50,16 +50,29 @@ impl<'a> Tree<'a> {
 
 pub struct Assets {
     pub root: Value,
+    lanes: HashMap<String, (Box<serde_json::value::RawValue>, std::sync::OnceLock<Value>)>,
 }
 
 impl Assets {
     pub fn load(path: &str) -> Result<Self, String> {
         let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
-        let root: Value = serde_json::from_slice(&bytes).map_err(|e| format!("{path}: {e}"))?;
-        if root["source_region"] != "Global" {
-            return Err(format!("{path}: race assets require source_region Global"));
+        let top: HashMap<String, Box<serde_json::value::RawValue>> = serde_json::from_slice(&bytes).map_err(|e| format!("{path}: {e}"))?;
+        drop(bytes);
+        let mut root = serde_json::Map::new();
+        let mut lanes = HashMap::new();
+        for (k, raw) in top {
+            if k == "lane_assets" {
+                let m: HashMap<String, Box<serde_json::value::RawValue>> = serde_json::from_str(raw.get()).map_err(|e| format!("{path}: {e}"))?;
+                lanes = m.into_iter().map(|(n, r)| (n, (r, std::sync::OnceLock::new()))).collect();
+            } else {
+                root.insert(k, serde_json::from_str(raw.get()).map_err(|e| format!("{path}: {e}"))?);
+            }
         }
-        Ok(Assets { root })
+        let root = Value::Object(root);
+        if root["source_region"] != "Japan" {
+            return Err(format!("{path}: race assets require source_region Japan"));
+        }
+        Ok(Assets { root, lanes })
     }
     pub fn params(&self) -> Tree<'_> {
         Tree(&self.root["race_param_define"]["objects"][0]["fields"])
@@ -68,7 +81,11 @@ impl Assets {
         &self.root["course_sets"][id.to_string()]
     }
     pub fn lane_asset(&self, name: &str) -> &Value {
-        &self.root["lane_assets"][name]["objects"][0]["fields"]
+        static NULL: Value = Value::Null;
+        match self.lanes.get(name) {
+            Some((raw, cell)) => &cell.get_or_init(|| serde_json::from_str(raw.get()).unwrap_or(Value::Null))["objects"][0]["fields"],
+            None => &NULL,
+        }
     }
 }
 
@@ -105,8 +122,17 @@ pub struct SkillRef {
 }
 
 #[derive(Deserialize, Clone, Debug)]
+pub struct ScenarioData {
+    #[serde(rename = "type")]
+    pub kind: i64,
+    pub value: i64,
+}
+
+#[derive(Deserialize, Clone, Debug)]
 pub struct HorseIn {
     pub frame_order: i32,
+    #[serde(default)]
+    pub scenario_data_array: Vec<ScenarioData>,
     #[serde(default, deserialize_with = "viewer_marker")]
     pub viewer_id: i64,
     #[serde(default)]
@@ -156,6 +182,8 @@ pub struct HorseIn {
     pub rarity: i32,
     #[serde(default)]
     pub talent_level: i32,
+    #[serde(default)]
+    pub use_type: i32,
 }
 
 fn null_i32<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i32, D::Error> {

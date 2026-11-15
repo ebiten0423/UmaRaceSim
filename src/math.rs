@@ -7,10 +7,12 @@ pub fn approximately(a: f32, b: f32) -> bool {
 }
 
 pub fn gate_movement(movement: f32, remaining_delay: f32, dt: f32) -> f32 {
-    (movement as f64 * (remaining_delay.abs() as f64 / dt as f64)) as f32
+    if crate::envc::var_os("JPRACE_GATE_F64").is_some() {return (movement as f64 * (remaining_delay.abs() as f64 / dt as f64)) as f32;}
+    movement * (remaining_delay.abs() / dt)
 }
 
 pub fn log10(x: f32) -> f32 {
+    match mlog_mode() { 1 => return (x as f64).log10() as f32, 2 => return x.log10(), _ => {} }
     if x == 0.0 { return f32::NEG_INFINITY; }
     if x < 0.0 { return f32::NAN; }
     if !x.is_finite() { return x; }
@@ -49,7 +51,28 @@ pub fn log10(x: f32) -> f32 {
     0.30078125f32.mul_add(exponent, LOG_HI[i]) + low
 }
 
+fn powf_mode() -> u8 {
+    static M: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
+    *M.get_or_init(|| match crate::envc::var("JPRACE_POWF").as_deref() { Ok("d") => 1, Ok("m") => 2, _ => 0 })
+}
+fn mpow_mode() -> u8 {
+    static M: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
+    *M.get_or_init(|| match crate::envc::var("JPRACE_MPOW").as_deref() { Ok("d") => 1, Ok("f") => 2, _ => 0 })
+}
+fn mlog_mode() -> u8 {
+    static M: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
+    *M.get_or_init(|| match crate::envc::var("JPRACE_MLOG").as_deref() { Ok("d") => 1, Ok("f") => 2, _ => 0 })
+}
+pub trait PowX { fn powx(self, y: Self) -> Self; }
+impl PowX for f32 {
+    fn powx(self, y: f32) -> f32 {
+        match powf_mode() { 1 => (self as f64).powf(y as f64) as f32, 2 => pow(self, y), _ => self.powf(y) }
+    }
+}
+impl PowX for f64 { fn powx(self, y: f64) -> f64 { self.powf(y) } }
+
 pub fn pow(x: f32, y: f32) -> f32 {
+    match mpow_mode() { 1 => return (x as f64).powf(y as f64) as f32, 2 => return x.powf(y), _ => {} }
     if y == 0.0 || x == 1.0 { return 1.0; }
     if y == 1.0 { return x; }
     if x <= 0.0 || !x.is_finite() || !y.is_finite() || x.is_subnormal() {
