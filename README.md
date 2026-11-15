@@ -1,9 +1,6 @@
-This is a 1:1 Umamusume: Pretty Derby Global race simulator.
+This is a 1:1 Umamusume: Pretty Derby race simulator.
 
 Given the correct configuration and seed, it should simulate the exact same race as the real server does.
-
-While it is perfect on the 2379/2379 races I simulated it against, there may be extremely rare weird one offs where it does diverge, feel free to make a issue to report those.
-
 ## Build
 
 ```sh
