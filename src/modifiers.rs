@@ -2,15 +2,19 @@
 pub enum Operation {Add,Set}
 #[derive(Clone,Debug)]
 pub struct Modifier {pub index:usize,pub value:f32,pub operation:Operation,pub owner:u64,pub once:bool,pub remaining:Option<f32>,
-    pub lb:Option<[f32;5]>}
+    pub lb:Option<[f32;5]>,
+    pub lbb:f32,
+    pub born:f32}
 #[derive(Clone,Default,Debug)]
 pub struct Modifiers {pub entries:Vec<Modifier>}
+pub static NOW:std::sync::atomic::AtomicU32=std::sync::atomic::AtomicU32::new(0);
+fn now()->f32 {f32::from_bits(NOW.load(std::sync::atomic::Ordering::Relaxed))}
 impl Modifiers {
     pub fn add(&mut self,index:usize,value:f32,operation:Operation,owner:u64,once:bool) {
-        self.entries.push(Modifier{index,value,operation,owner,once,remaining:None,lb:None});
+        self.entries.push(Modifier{index,value,operation,owner,once,remaining:None,lb:None,lbb:0.0,born:now()});
     }
     pub fn add_timed(&mut self,index:usize,value:f32,operation:Operation,owner:u64,once:bool,remaining:f32) {
-        self.entries.push(Modifier{index,value,operation,owner,once,remaining:Some(remaining),lb:None});
+        self.entries.push(Modifier{index,value,operation,owner,once,remaining:Some(remaining),lb:None,lbb:0.0,born:now()});
     }
     pub fn update_timed(&mut self,dt:f32) {
         self.entries.retain_mut(|m|match &mut m.remaining {

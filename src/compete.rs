@@ -82,14 +82,18 @@ impl State {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Change { TopEnter(usize), TopExit(usize), FightEnter(usize), FightExit(usize) }
 
-fn formula(guts: f32, c: [f32; 3]) -> f32 { (c[0] * guts.max(0.0)).powx(c[1]) * c[2] }
+fn cmp_f64() -> u8 { static V: std::sync::OnceLock<u8> = std::sync::OnceLock::new(); *V.get_or_init(|| match crate::envc::var("JPRACE_CMP_F64").as_deref() { Ok("1") => 1, Ok("2") => 2, _ => 0 }) }
+fn formula_d(guts: f32, c: [f32; 3]) -> f64 { ((c[0] * guts.max(0.0)) as f64).powf(c[1] as f64) * c[2] as f64 }
+fn formula(guts: f32, c: [f32; 3]) -> f32 { if cmp_f64() > 0 { return formula_d(guts, c) as f32; } (c[0] * guts.max(0.0)).powx(c[1]) * c[2] }
 pub fn top_duration(r: &Runner, p: &Params) -> f32 {
+    if cmp_f64() == 2 { return (formula_d(r.guts, p.top_time) * r.strategy_proficiency as f64) as f32; }
     formula(r.guts, p.top_time) * r.strategy_proficiency
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Effects {
-    pub target_speed_add: f32, pub acceleration_add: f32,
+    pub target_speed_add: f32, pub top_speed_add: f32, pub fight_speed_add: f32,
+    pub acceleration_add: f32, pub target_speed_add_d: f64,
     pub hp_base_rate: Option<f32>,
 }
 pub fn effects(r: &Runner, m: &Mode, p: &Params) -> Effects {
@@ -99,10 +103,15 @@ pub fn effects(r: &Runner, m: &Mode, p: &Params) -> Effects {
             (_, false) => 0, (_, true) => 1,
         }])
     } else { None };
+    let top_speed_add = if m.top { formula(r.guts, p.top_speed) } else { 0.0 };
+    let fight_speed_add = if m.fight { formula(r.guts, p.fight_speed) } else { 0.0 };
     Effects {
-        target_speed_add: if m.top { formula(r.guts, p.top_speed) } else { 0.0 }
-            + if m.fight { formula(r.guts, p.fight_speed) } else { 0.0 },
+        target_speed_add: top_speed_add + fight_speed_add,
+        top_speed_add,
+        fight_speed_add,
         acceleration_add: if m.fight { formula(r.guts, p.fight_accel) } else { 0.0 },
+        target_speed_add_d: if m.top { formula_d(r.guts, p.top_speed) } else { 0.0 }
+            + if m.fight { formula_d(r.guts, p.fight_speed) } else { 0.0 },
         hp_base_rate,
     }
 }

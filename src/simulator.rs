@@ -23,7 +23,7 @@ fn ro_fi_sched(hi:usize,tick:i64)->Option<bool> {
 }
 fn chain_cond(row:&HashMap<String,Value>)->bool {
     let pre=crate::envc::var("JPRACE_CHAIN_PRE").as_deref()!=Ok("0");
-    (1..=2).any(|n|sval(row,&format!("condition_{n}")).contains("is_activate_other_skill_detail")
+    (1..=3).any(|n|sval(row,&format!("condition_{n}")).contains("is_activate_other_skill_detail")
         || pre && sval(row,&format!("precondition_{n}")).contains("is_activate_other_skill_detail"))
 }
 #[derive(Clone)]
@@ -32,7 +32,7 @@ struct Detail {
     left:f32, cooldown:f32, uid:u64, number:usize, additional_seen:i32, additional_used:[i32;3], orderup_seen:i32, time_ext_used:i32,
 }
 #[derive(Clone)]
-struct Skill { id:i32, level:i32, row:HashMap<String,Value>, enabled:bool, details:Vec<Detail>, cooldown:f32 }
+struct Skill { id:i32, level:i32, row:HashMap<String,Value>, enabled:bool, details:Vec<Detail>, cooldown:f32, chain:bool }
 #[derive(Clone,Copy)]
 struct Around { i:usize, gap:f32, gap_abs:f32, lane:f32, lane_abs:f32, speed_gap:f32 }
 #[derive(Clone)]
@@ -42,10 +42,10 @@ struct Horse {
     distance:f32, prev_distance:f32, lane:f32, prev_lane:f32, lane_max:f32, target_lane:f32, lane_speed:f32,
     position:[f32;3], pos64:[f64;3], speed:f32, cf_speed:f32, cf_hp:f32, cf_pos:[f32;2], self_speed:f32, min_speed:f32, hp:f32, max_hp:f32,
     delay:f32, original_delay:f32, phase:usize, start_dash:bool, finished:bool,
-    order:usize, prev_order:usize, ou_cnt:i32, guts_order:usize, wiz_order:usize,
+    order:usize, prev_order:usize, ou_cnt:i32, stop_sum:f32, stop_n:u32, fs_pin:bool, guts_order:usize, wiz_order:usize,
     front:Option<usize>, inside:Option<usize>, outside:Option<usize>, near_count:usize,
     front_time:f32, side_time:f32, near_front_time:f32, near_behind_time:f32,
-    near_behind_set:Vec<f32>, surround:[bool;3], reserved:Vec<i32>,
+    near_behind_set:Vec<f32>, surround:[bool;3], reserved:Vec<i32>, re_reserved:Vec<i32>,
     corner:i32, corner_end:f32, final_corner:bool, straight:bool, in_last_straight:bool, front_type:i32,
     slope:f32, slope_end:f32, called_event:i32,
     stat_max:f32, speed_max:f32, keep_prev_dbg:i32, cbs_next:f32, sl_next:f32, jp_next:[i64;2],jp_keep_next:i64,jp_keep_thr:f32,jp_sec:i32,
@@ -58,9 +58,9 @@ struct Horse {
     order_up:[i32;8], order_up_cool:Vec<f32>, ot_target_time:f32, ot_noup_time:f32, ot_noup_order:usize, fight_count:i32, lane_move:f32,
     hp_empty:bool, block_front_acc:f32, apt_distance:i32, apt_ground:i32,
     activate_count:i32, activate_phase:[i32;4], activate_half:[i32;2], heal_count:i32, keep:crate::position_keep::Keep, cp:Conserve,
-    used_skills:Vec<i32>, jp_cbs_rate:f32, jp_cbs_near:bool, jp_cbs_preset:Option<f32>,
+    used_skills:Vec<i32>, used_details:Vec<(i32,usize)>, jp_cbs_rate:f32, jp_cbs_near:bool, jp_cbs_preset:Option<f32>,
     rafs_on:bool, rafs_t0:f32, rafs_draw:bool, speed_unc:f32, fs_j:f32, fs_x:f32, fs_x64:f64, fs_n:u32, fs_tacc:[f32;2], goal_tgt:f32, prev_mv:[f32;2], prev_side:(Option<usize>,Option<usize>), prev_front:Option<usize>, hp0_seen:bool, hp0_t:f32, fs_e:f32, fs_lj:f32, fs_r:f32, fs_pred:u32, fs_pending:bool, fs_thr:f32, sens:[f32;2], fs_cap:f32,
-    slb_u:Option<[f64;2]>, hp_prev0:bool, hp_t0:bool, slb_re:bool, hp_chg:f32, slb_on:bool, slb_pending:bool, slb_v:f32, slb_thr:f32, slb_t0:f32, slb_cmp:f32, spv0:f32, mode_add:f32, tgt_nohp:f32, m6_used:f32, m6_n:usize, tgt_base:f32,
+    slb_u:Option<[f64;2]>, hp_prev0:bool, hp_t0:bool, slb_re:bool, hp_chg:f32, slb_on:bool, slb_pending:bool, slb_v:f32, slb_thr:f32, slb_t0:f32, slb_cmp:f32, spv0:f32, mode_add:f32, tgt_nohp:f32, tgt_hp0:bool, m6_used:f32, m6_n:usize, tgt_base:f32,
     adv_tick:i64, adv_prev:i64, keep_heal:i32, side_max_mid:f32, lane_draw_t:f32, jp_keep_next2:i64, jp_keep_next3:i64, jp_cbs_u1:f32,
     adv_kinds:Vec<(i32,i64)>,
     lane_off:f32,
@@ -117,8 +117,8 @@ impl<'a> Simulator<'a> {
     fn p(&self)->Tree<'_> {self.assets.params()}
     fn build_details(&mut self,hi:usize,id:i32,row:&std::collections::HashMap<String,Value>)->Vec<Detail> {
         let mut details=vec![];
-        let shared_lot=(1..=2).any(|d|sval(row,&format!("condition_{d}")).contains("random_lot_shared")).then(||self.random.int_max(100));
-        for d in 1..=2 {
+        let shared_lot=(1..=3).any(|d|sval(row,&format!("condition_{d}")).contains("random_lot_shared")).then(||self.random.int_max(100));
+        for d in 1..=3 {
             let text=sval(row,&format!("condition_{d}"));if text.is_empty() {continue;}
             let c0=self.random.calls();
             self.random.wide=!f32m('W');
@@ -200,14 +200,14 @@ impl<'a> Simulator<'a> {
             let lane_min=if ro && !mirror && crate::envc::var("JPRACE_RUN_OUTSIDE_MIN").as_deref()==Ok("1") {abs_lane(0)} else {0.0f32};
             let lane_max_h=c.lane_max;
             let ex=h.running_style==1 && h.skill_array.iter().any(|sk|self.master.find("skill_data","id",sk.skill_id as i64)
-                .is_some_and(|r|(1..=2).any(|d|(1..=3).any(|a|ival(r,&format!("ability_type_{d}_{a}"))==6))));
+                .is_some_and(|r|(1..=3).any(|d|(1..=3).any(|a|ival(r,&format!("ability_type_{d}_{a}"))==6))));
             let raw=h.pow as f32;
             let cp_pow=if raw>1200.0 {(1200.0+(raw-1200.0)*0.5)*mood+(raw-1200.0)*0.5} else {raw*mood};
             horses.push(Horse {input:h.clone(),base,adjusted,mods:Modifiers::default(),skills:vec![],distance:0.0,prev_distance:0.0,
                 order_continue:[[true;9];2],lane,prev_lane:lane,lane_max:lane_max_h,target_lane:lane,lane_speed:0.0,position:self.geometry.world(0.0,lane),pos64:self.geometry.world64(0.0,lane),speed:p.f("StartSpeed"),
                 self_speed:p.f("StartSpeed"),min_speed:p.f("StartSpeed"),hp:0.0,max_hp:0.0,delay:0.0,original_delay:0.0,
-                keep_prev_dbg:0,cbs_next:-1.0,sl_next:-1.0,jp_next:[-1,-1],jp_keep_next:-1,jp_keep_thr:0.0,ou_cnt:0,jp_sec:-1,phase:0,start_dash:true,finished:false,order:i,prev_order:i,ot_target_time:0.0,ot_noup_time:0.0,ot_noup_order:i,fight_count:0,cf_speed:0.0,cf_hp:0.0,cf_pos:[0.0;2],lane_move:0.0,hp_empty:false,block_front_acc:0.0,apt_distance:distance_apt,apt_ground:ground_apt,order_up:[0;8],order_up_cool:vec![0.0;self.input.horses.len()],guts_order:0,wiz_order:0,
-                front:None,inside:None,outside:None,near_count:0,around:vec![],visible:vec![],in_space:0.0,out_space:0.0,overtake:vec![],ot_cool:0.0,move_time:0.0,move_dir:0,front_time:0.0,side_time:0.0,near_front_time:0.0,near_behind_time:0.0,near_behind_set:vec![],surround:[false;3],reserved:vec![],
+                keep_prev_dbg:0,cbs_next:-1.0,sl_next:-1.0,jp_next:[-1,-1],jp_keep_next:-1,jp_keep_thr:0.0,ou_cnt:0,stop_sum:0.0,stop_n:0,fs_pin:false,jp_sec:-1,phase:0,start_dash:true,finished:false,order:i,prev_order:i,ot_target_time:0.0,ot_noup_time:0.0,ot_noup_order:i,fight_count:0,cf_speed:0.0,cf_hp:0.0,cf_pos:[0.0;2],lane_move:0.0,hp_empty:false,block_front_acc:0.0,apt_distance:distance_apt,apt_ground:ground_apt,order_up:[0;8],order_up_cool:vec![0.0;self.input.horses.len()],guts_order:0,wiz_order:0,
+                front:None,inside:None,outside:None,near_count:0,around:vec![],visible:vec![],in_space:0.0,out_space:0.0,overtake:vec![],ot_cool:0.0,move_time:0.0,move_dir:0,front_time:0.0,side_time:0.0,near_front_time:0.0,near_behind_time:0.0,near_behind_set:vec![],surround:[false;3],reserved:vec![],re_reserved:vec![],
                 corner:0,corner_end:0.0,final_corner:false,straight:false,in_last_straight:false,front_type:0,
                 slope:if crate::envc::var("JPRACE_SLOPE0").as_deref()!=Ok("1") {0.0} else {c.slopes.iter().find(|s|s.start<=0.0 && 0.0<s.end).map_or(0.0,|s|s.per)},
                 slope_end:if crate::envc::var("JPRACE_SLOPE0").as_deref()!=Ok("1") {0.0} else {c.slopes.iter().find(|s|s.start<=0.0 && 0.0<s.end).map_or(0.0,|s|s.end)},called_event:-1,
@@ -219,7 +219,7 @@ impl<'a> Simulator<'a> {
                 ground_coef:self.rate("race_proper_ground_rate",ground_apt,"proper_rate")?,section_speed:[0.0;24],section_base:[0.0;24],section_base_n:[0.0;24],section_base_f:[0.0;24],
                 temptation_section:0,temptation_mode:0,temptation_active:false,temptation_count:0,temptation_timer:0.0,temptation_check:0.0,temptation_forced:false,temptation_end:0,
                 downhill:false,downhill_check:0.0,spurt_result:8,spurt_start:-1.0,spurt_speed:0.0,spurt_ev:false,rc_start:-1.0,j_start:-1.0,spurt_calculated:false,skill_time:-1.0,target_speed:0.0,after_goal:0.0,extra_lane:None,force_lane:false,
-                raw_time:-1.0,scaled_time:-1.0,activate_count:0,activate_phase:[0;4],activate_half:[0;2],heal_count:0,used_skills:vec![],jp_cbs_rate:1.0,jp_cbs_near:false,jp_cbs_preset:None,rafs_on:false,rafs_t0:0.0,rafs_draw:false,speed_unc,fs_j:0.0,fs_x:0.0,fs_x64:0.0,fs_n:0,fs_tacc:[-1.0,-1.0],goal_tgt:-1.0,prev_mv:[-1.0,-1.0],prev_side:(None,None),prev_front:None,hp0_seen:false,hp0_t:-1.0,fs_e:-1.0,fs_lj:0.0,fs_r:0.0,fs_pred:0,fs_pending:false,fs_thr:0.0,sens:[0.0;2],fs_cap:-1.0,slb_u:None,hp_prev0:false,hp_t0:false,slb_re:false,hp_chg:0.0,slb_on:false,slb_pending:false,slb_v:0.0,slb_thr:0.0,slb_t0:-1.0,slb_cmp:-1.0,spv0:-1.0,mode_add:0.0,tgt_nohp:0.0,m6_used:0.0,m6_n:0,tgt_base:0.0,adv_tick:-100,adv_prev:-100,keep_heal:0,side_max_mid:0.0,lane_draw_t:-1.0,jp_keep_next2:-1,jp_keep_next3:-1,jp_cbs_u1:-1.0,adv_kinds:vec![],lane_off,lane_min,lane_off_ro:ro,fi_latch:std::cell::Cell::new(false),fi_in:false,ro_base:if ro {abs_lane(0)} else {0.0},slope_clear_tick:-100,keep:crate::position_keep::Keep::default(),cp:Conserve {pow:cp_pow,..Default::default()}});
+                raw_time:-1.0,scaled_time:-1.0,activate_count:0,activate_phase:[0;4],activate_half:[0;2],heal_count:0,used_skills:vec![],used_details:vec![],jp_cbs_rate:1.0,jp_cbs_near:false,jp_cbs_preset:None,rafs_on:false,rafs_t0:0.0,rafs_draw:false,speed_unc,fs_j:0.0,fs_x:0.0,fs_x64:0.0,fs_n:0,fs_tacc:[-1.0,-1.0],goal_tgt:-1.0,prev_mv:[-1.0,-1.0],prev_side:(None,None),prev_front:None,hp0_seen:false,hp0_t:-1.0,fs_e:-1.0,fs_lj:0.0,fs_r:0.0,fs_pred:0,fs_pending:false,fs_thr:0.0,sens:[0.0;2],fs_cap:-1.0,slb_u:None,hp_prev0:false,hp_t0:false,slb_re:false,hp_chg:0.0,slb_on:false,slb_pending:false,slb_v:0.0,slb_thr:0.0,slb_t0:-1.0,slb_cmp:-1.0,spv0:-1.0,mode_add:0.0,tgt_nohp:0.0,tgt_hp0:false,m6_used:0.0,m6_n:0,tgt_base:0.0,adv_tick:-100,adv_prev:-100,keep_heal:0,side_max_mid:0.0,lane_draw_t:-1.0,jp_keep_next2:-1,jp_keep_next3:-1,jp_cbs_u1:-1.0,adv_kinds:vec![],lane_off,lane_min,lane_off_ro:ro,fi_latch:std::cell::Cell::new(false),fi_in:false,ro_base:if ro {abs_lane(0)} else {0.0},slope_clear_tick:-100,keep:crate::position_keep::Keep::default(),cp:Conserve {pow:cp_pow,..Default::default()}});
         }
         self.horses=horses;
         self.compete=crate::compete::State::new(self.horses.len());
@@ -232,7 +232,7 @@ impl<'a> Simulator<'a> {
             for sk in self.horses[hi].input.skill_array.clone() {
                 let row=self.master.find("skill_data","id",sk.skill_id as i64).ok_or_else(||format!("missing skill {}",sk.skill_id))?.clone();
                 let details=self.build_details(hi,sk.skill_id,&row);
-                self.horses[hi].skills.push(Skill{id:sk.skill_id,level:sk.level,row,enabled:false,details,cooldown:0.0});
+                let chain=chain_cond(&row);self.horses[hi].skills.push(Skill{id:sk.skill_id,level:sk.level,row,enabled:false,details,cooldown:0.0,chain});
             }
         }
         if crate::envc::var("JPRACE_DEBUG").is_ok() {eprintln!("rng calls after build_details: {}",self.random.calls());}
@@ -252,7 +252,7 @@ impl<'a> Simulator<'a> {
             }
         }
         if crate::envc::var("JPRACE_DEBUG").is_ok() {eprintln!("rng calls after force_in+lot: {}",self.random.calls());}
-        self.skills_pass(0.0,1);self.skills_pass(0.0,0);
+        self.skills_pass(0.0,1);self.skills_pass(0.0,0);flush_stops(&mut self.horses);
         if crate::envc::var("JPRACE_DEBUG").is_ok() {eprintln!("rng calls before delay: {}",self.random.calls());}
         if let Ok(n)=crate::envc::var("JPRACE_BURN_BEFORE_DELAY") {for _ in 0..n.parse::<u32>().unwrap() {self.random.raw();}}
         for hi in 0..self.horses.len() {
@@ -419,7 +419,8 @@ impl<'a> Simulator<'a> {
             "succession_skill_count"=>h.input.skill_array.iter().filter(|s|if crate::envc::var_os("JPRACE_SUCCESSION_6DIGIT").is_some() {(900000..1000000).contains(&s.skill_id)}
                 else {self.master.find("skill_data","id",s.skill_id as i64).is_some_and(|r|ival(r,"unique_skill_id_1")!=0)}).count() as f32,
             "is_used_skill_id"=>if h.used_skills.contains(&rhs) {rhs as f32} else {-1.0},
-            "is_activate_other_skill_detail"=>boolean(h.used_skills.contains(&self.cur_skill)),
+            "is_activate_other_skill_detail"=>if rhs>=2 && crate::envc::var_os("JPRACE_IAOSD_OLD").is_none() {if h.used_details.contains(&(self.cur_skill,rhs as usize)) {rhs as f32} else {0.0}}
+                else {boolean(h.used_skills.contains(&self.cur_skill))},
             "is_popularity_top_character_activate_advantage_skill"=>{
                 let tick=(self.time/0.0666).round() as i64;
                 let top=self.horses.iter().enumerate().filter(|(_,o)|o.input.popularity>0).min_by_key(|(_,o)|o.input.popularity).map(|(i,_)|i);
@@ -561,7 +562,7 @@ impl<'a> Simulator<'a> {
             }
             for skill in &mut skills {
                 if ival(&skill.row,"priority")!=priority {continue;}
-                if self.horses[hi].rafs_draw && (skill.enabled || crate::envc::var_os("JPRACE_RAFS_LOTALL").is_some() || (crate::envc::var("JPRACE_RAFS_LOTCHAIN").as_deref()!=Ok("0") && chain_cond(&skill.row))) {
+                if self.horses[hi].rafs_draw && (skill.enabled || crate::envc::var_os("JPRACE_RAFS_LOTALL").is_some() || (crate::envc::var("JPRACE_RAFS_LOTCHAIN").as_deref()!=Ok("0") && skill.chain)) {
                     let lo=self.horses[hi].distance;let hi_d=self.course.distance;
                     let static_ok:Vec<bool>=skill.details.iter().map(|det|{
                         if crate::envc::var("JPRACE_RAFS_STATIC").as_deref()!=Ok("1") {return true;}
@@ -581,7 +582,7 @@ impl<'a> Simulator<'a> {
                     }
                 }
                 let chain_skill=crate::envc::var_os("JPRACE_CHAIN_BLOCK").is_none()
-                    && chain_cond(&skill.row);
+                    && skill.chain;
                 let was_active:Vec<bool>=skill.details.iter().map(|d|d.active).collect();
                 let mut handled=false;
                 if skill.details.iter().any(|d|d.active) {
@@ -620,7 +621,7 @@ impl<'a> Simulator<'a> {
                                 let cd=ival(&skill.row,&format!("float_cooldown_time_{}",d.number)) as f32*0.0001*
                                     (self.course.distance/self.p().i("Skill.CoolDownTimeDivideDistance") as f32);
                                 let chain=crate::envc::var_os("JPRACE_SKILL_SHARED_CD").is_none()
-                                    && chain_cond(&skill.row);
+                                    && skill.chain;
                                 if chain {d.cooldown=cd;} else {skill.cooldown=cd;}
                             }
                         }
@@ -628,7 +629,8 @@ impl<'a> Simulator<'a> {
                     if !chain_skill {continue;}
                     handled=true;
                 }
-                if skill.cooldown>0.0 {skill.cooldown=(skill.cooldown-dt).max(0.0);if skill.cooldown>0.0 {continue;}}
+                let re_res=self.horses[hi].re_reserved.contains(&skill.id);
+                if skill.cooldown>0.0 {skill.cooldown=(skill.cooldown-dt).max(0.0);if skill.cooldown>0.0 && !re_res {continue;}}
                 for (di,d) in skill.details.iter_mut().enumerate() {
                     if handled && was_active[di] {continue;}
                     if d.active && d.left>=0.0 {
@@ -641,8 +643,9 @@ impl<'a> Simulator<'a> {
                         }
                     } else if d.cooldown>0.0 {d.cooldown=(d.cooldown-dt).max(0.0);}
                     let alld=crate::envc::var("JPRACE_RESERVE_ALLD").as_deref()==Ok("1");
-                    let reserved=(d.number==1 || alld) && self.horses[hi].reserved.contains(&skill.id);
-                    if (!skill.enabled && !reserved) || d.active || d.cooldown>0.0 || self.horses[hi].finished {continue;}
+                    let re_reserved=(d.number==1 || alld) && re_res;
+                    let reserved=((d.number==1 || alld) && self.horses[hi].reserved.contains(&skill.id)) || re_reserved;
+                    if (!skill.enabled && !reserved) || d.active || (d.cooldown>0.0 && !re_reserved) || self.horses[hi].finished {continue;}
                     self.cur_skill=skill.id;
                     if !d.pre_passed {d.pre_passed=triggers::evaluate(&mut d.pre,self.horses[hi].distance,&|n,r|self.query(hi,n,r));}
                     let mut activate=reserved || d.pre_passed && triggers::evaluate(&mut d.condition,self.horses[hi].distance,&|n,r|self.query(hi,n,r));
@@ -653,6 +656,7 @@ impl<'a> Simulator<'a> {
                         eprintln!("dbgskill t={:.4} h={} d={} pre={} act={} dist={:.3} {} | pre: {}",self.time,hi,d.number,d.pre_passed,activate,self.horses[hi].distance,conds.join(" "),pres.join(" "));
                     }
                     if activate {
+                        if re_reserved {skill.cooldown=0.0;d.cooldown=0.0;}
                         let raw=ival(&skill.row,&format!("float_ability_time_{}",d.number));
                         d.left=if raw==-1 {-1.0} else {raw as f32*0.0001*(self.course.distance/self.p().i("Skill.AbilityTimeDivideDistance") as f32)};
                         if raw!=-1 && ival(&skill.row,&format!("ability_time_usage_{}",d.number))==8 && crate::envc::var("JPRACE_TIME_USAGE8").as_deref()!=Ok("0") {
@@ -695,6 +699,7 @@ impl<'a> Simulator<'a> {
                          let h=&mut self.horses[hi];h.adv_kinds.retain(|&(_,tt)|tt>=t-2);for k in kinds {h.adv_kinds.push((k,t));}}
                         let h=&mut self.horses[hi];h.activate_count+=1;
                         if !h.used_skills.contains(&skill.id) {h.used_skills.push(skill.id);}
+                        if !h.used_details.contains(&(skill.id,d.number)) {h.used_details.push((skill.id,d.number));}
                         h.activate_phase[h.phase.min(3)]+=1;
                         h.activate_half[usize::from(h.distance>=self.course.distance*0.5)]+=1;
                         d.additional_seen=h.activate_count;
@@ -713,7 +718,7 @@ impl<'a> Simulator<'a> {
                         if reserved && alld {continue;}
                         if reserved && crate::envc::var("JPRACE_RESERVE_ENABLE").as_deref()!=Ok("0") {skill.enabled=true;}
                         if reserved && crate::envc::var("JPRACE_RESERVE_DRAW").as_deref()==Ok("act") {self.random.int_max(100);}
-                        if chain_cond(&skill.row) && crate::envc::var("JPRACE_CHAIN_SAME").as_deref()!=Ok("0") {continue;}
+                        if skill.chain && crate::envc::var("JPRACE_CHAIN_SAME").as_deref()!=Ok("0") {continue;}
                         break;
                     }
                 }
@@ -725,6 +730,7 @@ impl<'a> Simulator<'a> {
     }
     fn reserve_random(&mut self,hi:usize,skills:&[Skill]) {
         self.horses[hi].reserved.clear();
+        self.horses[hi].re_reserved.clear();
         for (index,rarity) in [(25usize,2i64),(24,1)] {
             let count=self.horses[hi].mods.consume(index,0.0) as i32;
             if count<=0 {continue;}
@@ -834,6 +840,7 @@ impl<'a> Simulator<'a> {
                     self.p().arr(if u==35 {"Skill.RaceCourseDistanceTypeValueArray"} else {"Skill.RaceCourseDistanceTypeValue2Array"}).iter()
                         .find(|r|r["DistanceType"].as_i64()==Some(dt)).and_then(|r|r["AddValue"].as_i64()).unwrap_or(0)
                 },
+                9001=>{let c=&self.course;if c.distance>1400.0 && c.distance<=2400.0 {500} else {0}},
                 19|34=>{
                     let gap=self.horses.iter().map(|h|h.distance).fold(f32::MIN,f32::max)-self.horses[hi].distance;
                     self.p().arr(if u==19 {"Skill.DistanceDiffTopCoefAscArray"} else {"Skill.DistanceDiffTopCoefAscArray2"}).iter()
@@ -842,7 +849,8 @@ impl<'a> Simulator<'a> {
                 _=>0,
             }
         };
-        let mut value=(ival(row,&format!("float_ability_value_{suffix}"))+add_usage) as f32*0.0001;
+        let raw_value=ival(row,&format!("float_ability_value_{suffix}"))+add_usage;
+        let mut value=match crate::envc::var("JPRACE_VAL_SCALE").as_deref() {Ok("div")=>raw_value as f32/10000.0,Ok("f64")=>(raw_value as f64*0.0001) as f32,_=>raw_value as f32*0.0001};
         if let Ok(x)=crate::envc::var("JPRACE_SKILL_SCALE") && let Some((id,f))=x.split_once(':') && id.parse::<i64>().ok()==Some(ival(row,"id")) {value*=f.parse::<f32>().unwrap_or(1.0);}
         if value<0.0 {
             let team=self.horses[hi].input.team_id;
@@ -850,7 +858,7 @@ impl<'a> Simulator<'a> {
         }
         let usage=ival(row,&format!("ability_value_usage_{suffix}"));
         let coef=self.master.rows("skill_level_value").iter().find(|r|ival(r,"ability_type")==kind && ival(r,"level")==level as i64)
-            .map_or(1.0,|r|ival(r,"float_ability_value_coef") as f32*0.0001);
+            .map_or(1.0,|r|match crate::envc::var("JPRACE_LVCOEF").as_deref() {Ok("div")=>ival(r,"float_ability_value_coef") as f32/10000.0,Ok("f64")=>(ival(r,"float_ability_value_coef") as f64*0.0001) as f32,_=>ival(r,"float_ability_value_coef") as f32*0.0001});
         match ival(row,&format!("ability_value_level_usage_{suffix}")) {1=>value=coef*value,3=>value=(1.0/coef)*value,_=>()};
         let lb_parts=if matches!(kind,22|27) {self.wiz_limit_break_parts(hi,row)} else {None};
         let lb_dynamic=(kind==27 || kind==22 && crate::envc::var_os("JPRACE_LB22_STATIC").is_none()) && lb_parts.is_some() && crate::envc::var_os("JPRACE_LB_STATIC").is_none();
@@ -973,6 +981,16 @@ impl<'a> Simulator<'a> {
                 for &i in &targets {
                     if self.horses[i].skills.iter().any(|k|k.id==x) || self.horses[i].input.skill_array.iter().any(|k|k.skill_id==x) {
                         if !self.horses[i].reserved.contains(&x) {self.horses[i].reserved.push(x);}
+                    }
+                }
+            }
+        }
+        if kind==49 && crate::envc::var_os("JPRACE_NO_TYPE49").is_none() {
+            let cond=format!("{}@{}",sval(row,&format!("condition_{}",detail.number)),sval(row,&format!("precondition_{}",detail.number)));
+            if let Some(x)=cond.split(['&','@']).find_map(|t|t.strip_prefix("is_used_skill_id==").and_then(|v|v.parse::<i32>().ok())) {
+                for &i in &targets {
+                    if self.horses[i].skills.iter().any(|k|k.id==x) || self.horses[i].input.skill_array.iter().any(|k|k.skill_id==x) {
+                        if !self.horses[i].re_reserved.contains(&x) {self.horses[i].re_reserved.push(x);}
                     }
                 }
             }
@@ -1565,7 +1583,7 @@ impl<'a> Simulator<'a> {
             let no=crate::envc::var("JPRACE_NEED_ORD").ok();
             if no.as_deref()==Some("gsb") {guts*p.f("LastSpurtTargetSpeedGutsCoef2")+(speed*h.dist_speed*p.f("addSpeedParamCoef")+base_arg*p.f("baseTargetSpeedCoef"))} else
             if (f32m('p')||f32m('P')) || no.as_deref()==Some("f32") {guts*p.f("LastSpurtTargetSpeedGutsCoef2")+speed*h.dist_speed*p.f("addSpeedParamCoef")+base_arg*p.f("baseTargetSpeedCoef")} else {
-            (guts as f64*p.f("LastSpurtTargetSpeedGutsCoef2") as f64+
+            (if spmax_gd()>0 {((h.stat(3)*p.f("LastSpurtTargetSpeedGutsCoef1")) as f64).powf(p.f("LastSpurtTargetSpeedGutsPow") as f64)} else {guts as f64}*p.f("LastSpurtTargetSpeedGutsCoef2") as f64+
                 speed as f64*h.dist_speed as f64*p.f("addSpeedParamCoef") as f64+
                 base_arg as f64*p.f("baseTargetSpeedCoef") as f64) as f32}
         };
@@ -1662,10 +1680,25 @@ impl<'a> Simulator<'a> {
             8=>{let c=Tree(p.get("CompeteBeforeSpurt"));
                 let mode=crate::envc::var("JPRACE_CBS_RATE").unwrap_or_default();
                 let rate=if mode.contains('s') {h.jp_cbs_rate} else if mode.contains('h') && h.jp_cbs_near {0.5} else {1.0};
+                if crate::envc::var_os("JPRACE_LOG_MODE8").is_some() {eprintln!("mode8 h={} pow={:08x} guts={:08x} pdiv={:08x} pexp={:08x} pcoef={:08x} gdiv={:08x} gexp={:08x} coef={:08x} style={:08x} rate={:08x}",hi,h.stat(2).to_bits(),h.stat(3).to_bits(),
+                    c.f("CompeteBeforeSpurtSpeedUpPowDivisor").to_bits(),c.f("CompeteBeforeSpurtSpeedUpPowExponent").to_bits(),c.f("CompeteBeforeSpurtSpeedUpPowCoef").to_bits(),c.f("CompeteBeforeSpurtSpeedUpGutsDivisor").to_bits(),c.f("CompeteBeforeSpurtSpeedUpGutsExponent").to_bits(),
+                    c.f("CompeteBeforeSpurtSpeedUpCoef").to_bits(),Self::jp_style_coef(c.arr("CompeteBeforeSpurtSpeedUpRunningStyleCoefArray"),h).to_bits(),rate.to_bits());}
+                if mode_f64()>0 {
+                    let pw=|x:f32,y:f32|if mode_f64()==2 {(x as f64).powf(y as f64)} else {x.powx(y) as f64};
+                    let a=pw(h.stat(2)/c.f("CompeteBeforeSpurtSpeedUpPowDivisor"),c.f("CompeteBeforeSpurtSpeedUpPowExponent"));
+                    let b=pw(h.stat(3)/c.f("CompeteBeforeSpurtSpeedUpGutsDivisor"),c.f("CompeteBeforeSpurtSpeedUpGutsExponent"));
+                    return ((a*c.f("CompeteBeforeSpurtSpeedUpPowCoef") as f64+b)*c.f("CompeteBeforeSpurtSpeedUpCoef") as f64*Self::jp_style_coef(c.arr("CompeteBeforeSpurtSpeedUpRunningStyleCoefArray"),h) as f64*rate as f64) as f32;
+                }
                 (((h.stat(2)/c.f("CompeteBeforeSpurtSpeedUpPowDivisor")).powx(c.f("CompeteBeforeSpurtSpeedUpPowExponent"))*c.f("CompeteBeforeSpurtSpeedUpPowCoef")
                   +(h.stat(3)/c.f("CompeteBeforeSpurtSpeedUpGutsDivisor")).powx(c.f("CompeteBeforeSpurtSpeedUpGutsExponent")))
                  *c.f("CompeteBeforeSpurtSpeedUpCoef")*Self::jp_style_coef(c.arr("CompeteBeforeSpurtSpeedUpRunningStyleCoefArray"),h))*rate},
             10=>{let c=Tree(p.get("SecureLead"));
+                if mode_f64()>0 {
+                    let x=h.stat(3)/c.f("SecureLeadSpeedUpGutsDivisor");let y=c.f("SecureLeadSpeedUpGutsExponent");
+                    let a=if mode_f64()==2 {(x as f64).powf(y as f64)} else {x.powx(y) as f64};
+                    return (a*c.f("SecureLeadSpeedUpCoef") as f64
+                        *Self::jp_style_coef(c.arr("SecureLeadSpeedUpRunningStyleCoefArray"),h) as f64) as f32;
+                }
                 (h.stat(3)/c.f("SecureLeadSpeedUpGutsDivisor")).powx(c.f("SecureLeadSpeedUpGutsExponent"))*c.f("SecureLeadSpeedUpCoef")
                  *Self::jp_style_coef(c.arr("SecureLeadSpeedUpRunningStyleCoefArray"),h)},
             _=>0.0,
@@ -1724,11 +1757,14 @@ impl<'a> Simulator<'a> {
             match crate::envc::var("JPRACE_SLB_RINT").as_deref() {
                 Ok("0")=>((lo+(up-lo)*u2)/10000.0) as f32,
                 Ok("f32")=>(lo+((up-lo)*u2).floor()) as f32/10000.0f32,
-                Ok("mul")=>(lo+((up-lo)*u2).floor()) as f32*0.0001f32,
-                _=>((lo+((up-lo)*u2).floor())/10000.0) as f32,
+                Ok("div")=>((lo+((up-lo)*u2).floor())/10000.0) as f32,
+                _=>((lo+((up-lo)*u2).floor()) as f32)*0.0001f32,
             }
         } else {1.0};
-        let v=base*k*dist*rnd;
+        let v=match crate::envc::var("JPRACE_SLB_ORD").as_deref() {
+            Ok("bkdr")=>base*k*dist*rnd,
+            _=>base*dist*k*rnd,
+        };
         if let Some(u)=crate::envc::var("JPRACE_SLB_ULP").ok().and_then(|o|o.split(',').find_map(|kv|{let (a,b)=kv.split_once(':')?;(a.parse::<usize>().ok()?==hi).then(||b.parse::<i32>().ok()).flatten()})) {
             return f32::from_bits(v.to_bits().wrapping_add_signed(u));
         }
@@ -1751,6 +1787,8 @@ impl<'a> Simulator<'a> {
             let guts=math::pow(h.stat(3)*p.f("LastSpurtTargetSpeedGutsCoef1"),p.f("LastSpurtTargetSpeedGutsPow"));
             let speed=(spd*p.f("LastSpurtTargetSpeedCoefSqrt")).sqrt();
             let (g,sp,b)=(guts*p.f("LastSpurtTargetSpeedGutsCoef2"),speed*h.dist_speed*p.f("addSpeedParamCoef"),(base*p.f("lastSpurtBaseTargetSpeedAddCoef")+normal)*p.f("baseTargetSpeedCoef"));
+            if spmax_gd()>0 {let gd=((h.stat(3)*p.f("LastSpurtTargetSpeedGutsCoef1")) as f64).powf(p.f("LastSpurtTargetSpeedGutsPow") as f64)*p.f("LastSpurtTargetSpeedGutsCoef2") as f64;
+                return (gd+(sp+b) as f64) as f32;}
             if crate::envc::var("JPRACE_FS_JORD").as_deref()==Ok("old") {g+sp+b} else {g+(sp+b)}
         };
         let unc=match crate::envc::var("JPRACE_FS_SPD").as_deref() {Ok("nomod")=>h.speed_unc,Ok("raw")=>h.input.speed as f32,
@@ -1888,6 +1926,8 @@ impl<'a> Simulator<'a> {
             if spm>0 {match spm {1=>g+sp+b,2=>g+(sp+b),3=>b+sp+g,4=>g+b+sp,5=>(g6 as f32+s6 as f32)+b6 as f32,
                 6=>g+speed*(h.dist_speed*p.f("addSpeedParamCoef"))+b,7=>((g6+s6) as f32+b6 as f32),8=>(g6 as f32+(s6+b6) as f32),
                 9=>((g6+b6) as f32+s6 as f32),10=>(b6+s6+g6) as f32,_=>g+sp+b}} else
+            if spmax_gd()>0 {let gd=((h.stat(3)*p.f("LastSpurtTargetSpeedGutsCoef1")) as f64).powf(p.f("LastSpurtTargetSpeedGutsPow") as f64)*p.f("LastSpurtTargetSpeedGutsCoef2") as f64;
+                if spmax_gd()==2 {(gd+(s6+b6)) as f32} else {(gd+(sp+b) as f64) as f32}} else
             if (f32m('p')||f32m('q')) && crate::envc::var("JPRACE_SPMAX_ORD").as_deref()!=Ok("old") {g+(sp+b)} else
             if (f32m('p')||f32m('q')) {guts*p.f("LastSpurtTargetSpeedGutsCoef2")+speed*h.dist_speed*p.f("addSpeedParamCoef")+base_arg*p.f("baseTargetSpeedCoef")} else {
             (guts as f64*p.f("LastSpurtTargetSpeedGutsCoef2") as f64+
@@ -2208,7 +2248,7 @@ impl<'a> Simulator<'a> {
         }
     }
     fn compete_effects(&self,hi:usize)->crate::compete::Effects {
-        if self.compete.modes.len()<=hi {return crate::compete::Effects{target_speed_add:0.0,acceleration_add:0.0,hp_base_rate:None};}
+        if self.compete.modes.len()<=hi {return crate::compete::Effects{target_speed_add:0.0,top_speed_add:0.0,fight_speed_add:0.0,acceleration_add:0.0,target_speed_add_d:0.0,hp_base_rate:None};}
         crate::compete::effects(&self.compete_runner(hi,false),&self.compete.modes[hi],&crate::compete::Params::default())
     }
     fn near_times(&mut self,dt:f32) {
@@ -2322,7 +2362,8 @@ impl<'a> Simulator<'a> {
         let fstgt=|x:&Horse|->f32 {
             let m=crate::envc::var("JPRACE_OT_FSTGT").unwrap_or_default();
             if m=="0" || !x.rafs_on {return 0.0;}
-            if x.hp<=0.0 && crate::envc::var("JPRACE_OT_FSHP0").as_deref()!=Ok("1") {return 0.0;}
+            let hp0=if crate::envc::var("JPRACE_OT_FSHP0").as_deref()==Ok("now") {x.hp<=0.0} else {x.tgt_hp0};
+            if hp0 && crate::envc::var("JPRACE_OT_FSHP0").as_deref()!=Ok("1") {return 0.0;}
             let e=Tree(self.p().get("ExtraTargetSpeed"));
             let raw=if m=="unc" {x.speed_unc} else {x.input.speed as f32};
             let (sp,mp,sf,mf)=(e.f("ExtraTargetSpeedStartParam"),e.f("ExtraTargetSpeedMaxParam"),e.f("ExtraTargetSpeedStartFoundation"),e.f("ExtraTargetSpeedMaxFoundation"));
@@ -2406,6 +2447,7 @@ impl<'a> Simulator<'a> {
             let dps=self.p().f("overTakeDistPerSpeed");a.gap>=1.0 && a.gap<=20.0 && a.speed_gap>=0.0 && a.gap/a.speed_gap<=dps}));
         let cool=self.p().f("overTakeCoolDownTime");let tnow=self.time;let h=&mut self.horses[hi];
         let er=Some(crate::envc::var("JPRACE_OT_EMPTY_REPLAN").unwrap_or_else(|_|"hp0rafs".into()));
+        let er=if h.finished && crate::envc::var("JPRACE_EREPLAN_FIN").as_deref()!=Ok("1") {Some("none".to_string())} else {er};
         if list.is_empty() && prev_nonempty && (er.as_deref()==Some("1") || (er.as_deref()==Some("hp0") && h.hp<=0.0) || (er.as_deref()==Some("hp0nf") && h.hp<=0.0 && h.prev_front.is_none()) || (er.as_deref()==Some("tgt") && tgt_drop) || (er.as_deref()==Some("hp0tgt") && tgt_drop && h.hp<=0.0) || (er.as_deref()==Some("hp0new") && tgt_drop && h.hp<=0.0 && (!h.hp0_seen || tnow-h.hp0_t<0.1)) || (er.as_deref()==Some("hp0out") && tgt_drop && h.hp<=0.0 && (!h.hp0_seen || tnow-h.hp0_t<0.1) && h.target_lane>h.lane)
             || (er.as_deref()==Some("hp0rafs") && tgt_drop && h.hp<=0.0 && (!h.hp0_seen || tnow-h.hp0_t<0.1) && h.target_lane>h.lane && (h.rafs_on || h.slb_re || h.fs_j>0.0))) {h.force_lane=true;if crate::envc::var_os("JPRACE_LOG_EREPLAN").is_some() {eprintln!("ereplan tick={} rafs={} slbre={} slbon={} fsj={:.4} npc={} spd={} h={}",(tnow/0.0666).round() as i64,h.rafs_on,h.slb_re,h.slb_on,h.fs_j,h.input.npc_type,h.input.speed,hi);}}
         let now_t=tnow;
@@ -2501,6 +2543,9 @@ impl<'a> Simulator<'a> {
                 if let Some((a,b))=e.split_once(':') && a.parse::<usize>().ok()==Some(hi) && let Some((t0,t1))=b.split_once('-')
                     && let (Ok(t0),Ok(t1))=(t0.parse::<i64>(),t1.parse::<i64>()) && t0<=tick && tick<=t1 {h.target_lane=h.lane;return;}
             }
+        }
+        if plan && crate::envc::var("JPRACE_LOG_TLANE").ok().and_then(|x|x.parse::<usize>().ok())==Some(hi) {
+            eprintln!("tlane tick={} lane={:.5} tgt={:.5} force={} blocked={} ot={:?} cool={:.4} hp={:.3} fin={} ag={:.4} extra={:?} en_in={} en_out={} ph={}",(self.time/0.0666).round() as i64,h.lane,h.target_lane,h.force_lane,blocked_target,h.overtake,h.ot_cool,h.hp,h.finished,h.after_goal,h.extra_lane,enable_in,enable_out,h.phase);
         }
         if plan && (h.force_lane || blocked_target || overtaking || (h.target_lane-h.lane).abs()<0.02777777798473835) {
             h.force_lane=false;h.target_lane=h.lane;
@@ -2614,7 +2659,7 @@ impl<'a> Simulator<'a> {
             if crate::envc::var("JPRACE_GOAL_LB").as_deref()!=Ok("0") && self.horses[hi].mods.entries.iter().any(|m|m.lb.is_some()) {
                 let ph=self.horses[hi].phase;
                 let coefs:Vec<f32>=self.horses[hi].mods.entries.iter().map(|m|m.lb.map_or(0.0,|r|if ph>=4 {0.0} else {self.wiz_limit_break_coef(ph,r[3] as i32,r[4]>0.5)})).collect();
-                for (m,c) in self.horses[hi].mods.entries.iter_mut().zip(coefs) {if let Some(r)=m.lb {m.value=lb_value(r,0.0,c);}}
+                for (m,c) in self.horses[hi].mods.entries.iter_mut().zip(coefs) {if let Some(r)=m.lb {m.value=lb_value(r,0.0,c);m.lbb=lb_bonus(r,0.0,c);}}
             }
             {
                 let max=match self.horses[hi].front {
@@ -2638,7 +2683,8 @@ impl<'a> Simulator<'a> {
                 v=v.clamp(5.0,max.max(5.0));h.self_speed=v;h.speed=(h.mods.apply(23,0.0)+h.mods.apply(5,0.0)+v).clamp(5.0,max.max(5.0));
                 if crate::envc::var("JPRACE_LOG_VBITS").ok().and_then(|x|x.parse::<usize>().ok())==Some(hi) {eprintln!("vbits tick={} h={} self={:08x} spd={:08x} tgt={:08x} ag={:.4} max={:08x}",(self.time/0.0666).round() as i64,hi,h.self_speed.to_bits(),h.speed.to_bits(),target.to_bits(),h.after_goal,max.to_bits());}
             }
-            let plan=self.horses[hi].after_goal<1.0;
+            let gps=crate::envc::var("JPRACE_GOAL_PLANSKIP").ok().and_then(|x|x.parse::<f32>().ok()).unwrap_or(0.0);
+            let plan=self.horses[hi].after_goal<1.0 && self.horses[hi].after_goal>=gps;
             if plan {self.update_overtake(hi,dt);self.move_lane(hi,dt,true);}
             self.move_lane(hi,dt,false);
             if crate::envc::var("JPRACE_GOAL_LB").as_deref()!=Ok("0") {let d=self.horses[hi].distance;self.horses[hi].phase=self.course.phase(d);}
@@ -2819,14 +2865,62 @@ impl<'a> Simulator<'a> {
         let fx_last=crate::envc::var("JPRACE_FSX_LAST").ok();let mut fx_add=0.0f32;
         let mut tprev:Option<f32>=None;let mut tparts=(0.0f32,0.0f32);self.horses[hi].fs_cap=-1.0;
         let tb=target;self.horses[hi].tgt_base=tb;let h=&self.horses[hi];
+        let fs_v1=fs_arch_v1();
+        let mut arch_j_added=false;
+        let mut slb_added=false;
+        let arch_slb=if fs_v1 && slb_enabled() && dt>0.0 && !self.horses[hi].finished && self.horses[hi].slb_u.is_some() {
+            let h=&self.horses[hi];
+            let sd=crate::envc::var("JPRACE_SLB_DELAY").ok().and_then(|x|x.parse::<f32>().ok()).unwrap_or(1.0);
+            if h.slb_on && self.time>=h.slb_t0+sd*dt-1e-4 {h.slb_v} else {0.0}
+        } else {0.0};
+        let arch_f=if fs_v1 && fs_enabled() && dt>0.0 && !self.horses[hi].finished {
+            let oracle=crate::envc::var_os("JPRACE_FS_ORACLE").is_some();
+            let tick=(self.time/dt).round() as i64;
+            let h=&self.horses[hi];
+            let rafs_now=h.rafs_on || (!oracle && h.fs_pending) || (oracle && self.rafs_oracle.iter().any(|&(oh,t)|oh==hi && (t/dt).round() as i64==tick));
+            if rafs_now && h.input.speed>=2001 {
+                let e=Tree(p.get("ExtraTargetSpeed"));
+                let (sp,mp,sf,mf)=(e.f("ExtraTargetSpeedStartParam"),e.f("ExtraTargetSpeedMaxParam"),e.f("ExtraTargetSpeedStartFoundation"),e.f("ExtraTargetSpeedMaxFoundation"));
+                sf+(mf-sf)*((h.input.speed as f32-sp)/(mp-sp)).clamp(0.0,1.0)
+            } else {0.0}
+        } else {0.0};
         let lc=crate::envc::var("JPRACE_LOG_TGTCHAIN").as_deref()==Ok("all") || crate::envc::var("JPRACE_LOG_TGTCHAIN").ok().and_then(|x|x.parse::<usize>().ok())==Some(hi);
         let mut chain:Vec<(String,u32)>=Vec::new();if lc {chain.push(("base".into(),target.to_bits()));}
+        if fs_v1 && fs_enabled() && dt>0.0 && !self.horses[hi].finished && crate::envc::var_os("JPRACE_FS_ORACLE").is_none() {
+            let elig=self.horses[hi].input.speed as f32>=Tree(p.get("ExtraTargetSpeed")).f("ExtraTargetRawSpeedParam");
+            let in_spurt={let h=&self.horses[hi];let st=if h.j_start>0.0 {if crate::envc::var("JPRACE_RECALC_JSTART").as_deref()==Ok("latest") {h.j_start} else {h.j_start.min(h.spurt_start)}} else {h.spurt_start};h.spurt_start>0.0 && h.spurt_result&12==0 && h.distance>=st};
+            if elig && in_spurt {
+                let start_f=Tree(p.get("ExtraTargetSpeed")).f("ExtraTargetSpeedStartFoundation");
+                let jk=crate::envc::var("JPRACE_FS_JK").ok().and_then(|x|x.parse::<f32>().ok()).unwrap_or(1.0);
+                let j=(match crate::envc::var("JPRACE_FS_J").as_deref().unwrap_or("unc") {"unc"=>self.fs_extra_max(hi),x if x.parse::<f32>().is_ok()=>x.parse::<f32>().unwrap(),_=>self.fs_foundation(hi)-start_f}*jk).max(0.0);
+                target+=j;arch_j_added=true;if lc {chain.push((format!("j{:08x}",j.to_bits()),target.to_bits()));}
+            }
+        }
+        let h=&self.horses[hi];
         if h.keep.mode!=0 {target*=h.keep.multiply;if lc {chain.push((format!("mul{}",h.keep.multiply),target.to_bits()));}}
+        let mode_pos=crate::envc::var("JPRACE_MODE_POS").unwrap_or_else(|_|"first".into());
+        let mode_first=mode_pos!="last";
+        let mut mode_act:Vec<(f32,i64,f32)>=Vec::new();
+        if mode_first && dt>0.0 {
+            let shift=crate::envc::var("JPRACE_MODE_SHIFT").ok().and_then(|x|x.parse::<f32>().ok()).unwrap_or(-1.0)*dt;
+            let es=crate::envc::var("JPRACE_MODE_ENDSHIFT").ok();
+            let mut ord:Vec<(usize,i64,f32,f32)>=self.oracle.clone();
+            if crate::envc::var("JPRACE_MODE_ORDER").as_deref()!=Ok("rec") {ord.sort_by_key(|e|e.1);}
+            for &(oh,kind,st,en) in &ord {
+                let eshift=es.as_deref().and_then(|v|v.split(',').find_map(|x|{let (a,b)=x.split_once(':')?;(a.parse::<i64>().ok()?==kind).then(||b.parse::<f32>().ok()).flatten()})).unwrap_or(0.0)*dt;
+                if oh!=hi || !(self.time>=st-shift-1e-3 && self.time<en-shift+eshift-1e-3) {continue;}
+                let mult=if crate::envc::var("JPRACE_MINOR_DYN").as_deref()==Ok("1") {self.jp_minor_mult(hi,kind,(self.time/dt).round() as i64)}
+                    else {self.minor_ev.iter().find(|e|e.0==oh && e.1==kind && e.2==st).map_or(1.0,|e|e.3)};
+                let v=self.jp_mode_speed(hi,kind)*mult;
+                if mode_pos=="act" {mode_act.push((st,kind,v));} else {target+=v;if lc {chain.push((format!("mode{}:{:08x}",kind,v.to_bits()),target.to_bits()));}}
+            }
+        }
+        let h=&self.horses[hi];
         let ftop=crate::envc::var("JPRACE_FS_TOP").unwrap_or_default();
-        let early_f=if matches!(ftop.as_str(),"early"|"m6"|"ce") && h.rafs_on && h.input.speed>=2001 {let e=Tree(p.get("ExtraTargetSpeed"));
+        let early_f=if fs_v1 {arch_f} else if matches!(ftop.as_str(),"early"|"m6"|"ce") && h.rafs_on && h.input.speed>=2001 {let e=Tree(p.get("ExtraTargetSpeed"));
             let (sp,mp,sf,mf)=(e.f("ExtraTargetSpeedStartParam"),e.f("ExtraTargetSpeedMaxParam"),e.f("ExtraTargetSpeedStartFoundation"),e.f("ExtraTargetSpeedMaxFoundation"));
             sf+(mf-sf)*((h.input.speed as f32-sp)/(mp-sp)).clamp(0.0,1.0)} else {0.0};
-        if ftop=="early" {target+=early_f;}
+        if fs_v1 {if early_f>0.0 {target+=early_f;if lc {chain.push((format!("f{:08x}",early_f.to_bits()),target.to_bits()));}}} else if ftop=="early" {target+=early_f;}
         let fi_on=self.course.empty_in_move && h.phase==0 && h.lane>=p.f("forceInMoveLaneThreshold") && ro_fi_sched(hi,(self.time/0.0666).round() as i64).unwrap_or_else(||if h.lane_off_ro && let Ok(m)=crate::envc::var("JPRACE_RO_FI2") {match m.as_str() {"out"=>h.outside.is_some(),"both"=>h.inside.is_some()||h.outside.is_some(),"none"=>false,"outrail"=>h.outside.is_some()||h.lane>=h.lane_max-0.0001,_=>h.inside.is_some()}} else {(h.inside.is_some() && !(h.lane_off_ro && crate::envc::var_os("JPRACE_RO_FIMODE").is_some())) || h.fi_in || h.lane<=h.lane_min+0.0001 || (h.lane_off_ro && (crate::envc::var("JPRACE_RO_FI").as_deref()==Ok("always") || h.fi_latch.get()))});
         if h.lane_off_ro && h.phase==0 && crate::envc::var_os("JPRACE_LOG_FI").is_some() {eprintln!("fi tick={} h={} on={} lane={:.6} d={:.4} in={:?} out={:?} fi_in={} lb={:08x} db={:08x} v={:.5}",(self.time/0.0666).round() as i64,hi,fi_on,h.lane,h.distance,h.inside,h.outside,h.fi_in,h.lane.to_bits(),h.distance.to_bits(),h.speed);}
         if fi_on {target+=h.force_in;if h.lane_off_ro && crate::envc::var("JPRACE_RO_FI").as_deref()==Ok("latch") {h.fi_latch.set(true);}if lc {chain.push((format!("fi{:08x}",h.force_in.to_bits()),target.to_bits()));}}
@@ -2834,7 +2928,7 @@ impl<'a> Simulator<'a> {
             let ph=if crate::envc::var("JPRACE_LB_PHASE").as_deref()==Ok("dist") {self.course.phase(self.horses[hi].distance)} else {self.horses[hi].phase};
             let coefs:Vec<f32>=self.horses[hi].mods.entries.iter().map(|m|m.lb.map_or(0.0,|r|self.wiz_limit_break_coef(ph,r[3] as i32,r[4]>0.5))).collect();
             let fs=if self.horses[hi].rafs_on {crate::envc::var("JPRACE_FS_SKILL").ok().and_then(|x|x.parse::<f32>().ok()).unwrap_or(0.0)} else {0.0};
-            for (m,c) in self.horses[hi].mods.entries.iter_mut().zip(coefs) {if let Some(r)=m.lb {m.value=lb_value(r,fs,c);}}
+            for (m,c) in self.horses[hi].mods.entries.iter_mut().zip(coefs) {if let Some(r)=m.lb {m.value=lb_value(r,fs,c);m.lbb=lb_bonus(r,fs,c);}}
             if crate::envc::var("JPRACE_LOG_LB").ok().and_then(|x|x.parse::<usize>().ok())==Some(hi) {
                 let tick=(self.time/0.0666).round() as i64;
                 for m in self.horses[hi].mods.entries.iter().filter(|m|m.lb.is_some()) {let r=m.lb.unwrap();eprintln!("lb tick={} h={} idx={} v={:08x} r0={:08x} r1={:08x} r2={:08x} st={} ex={} ph={}",tick,hi,m.index,m.value.to_bits(),r[0].to_bits(),r[1].to_bits(),r[2].to_bits(),r[3],r[4],ph);}
@@ -2846,15 +2940,35 @@ impl<'a> Simulator<'a> {
             eprintln!("m6 tick={} h={} {:?}",(self.time/0.0666).round() as i64,hi,e);
         }
         let m6_before=target;
-        target=if crate::envc::var("JPRACE_TGT_SUM").as_deref()==Ok("1") {h.mods.apply_sum(6,target)} else {h.mods.apply(6,target)};
+        target=if let Ok(sp)=crate::envc::var("JPRACE_LB_SPLIT") {
+            let mut t=target;let mut tail=Vec::new();
+            for m in h.mods.entries.iter().filter(|m|m.index==6 && !m.once) {
+                match (m.lb.filter(|r|(r[0]+m.lbb).to_bits()==m.value.to_bits()),sp.as_str()) {
+                    (Some(r),"1")=>{t+=r[0];t+=m.lbb;},
+                    (Some(r),"2")=>{t+=r[0];tail.push(m.lbb);},
+                    (Some(r),"3")=>{t+=m.lbb;t+=r[0];},
+                    _=>{t+=m.value;}}
+            }
+            for b in tail {t+=b;}
+            t
+        } else if crate::envc::var("JPRACE_TGT_SUM").as_deref()==Ok("1") {h.mods.apply_sum(6,target)}
+        else if !mode_act.is_empty() {
+            let mut items:Vec<(f32,i64,f32)>=h.mods.entries.iter().filter(|m|m.index==6 && !m.once).map(|m|(m.born,100,m.value)).collect();
+            items.extend(mode_act.iter().cloned());
+            items.sort_by(|a,b|a.0.partial_cmp(&b.0).unwrap().then(a.1.cmp(&b.1)));
+            let mut t=target;
+            for (_,kind,v) in items {t+=v;if lc && kind<100 {chain.push((format!("mode{}:{:08x}",kind,v.to_bits()),t.to_bits()));}}
+            t
+        } else {h.mods.apply(6,target)};
         if let Some(c)=crate::envc::var("JPRACE_M6CAP").ok().and_then(|x|x.parse::<f32>().ok()) && target-m6_before>c {target=m6_before+c;}
         let m6_used=target-m6_before;self.horses[hi].m6_used=m6_used;
         if lc {for m in self.horses[hi].mods.entries.iter().filter(|m|m.index==6 && !m.once) {chain.push((format!("m6e{:08x}",m.value.to_bits()),0));}chain.push(("m6".into(),target.to_bits()));}
-        if ftop=="m6" {target+=early_f;}
+        if !fs_v1 && ftop=="m6" {target+=early_f;}
         self.horses[hi].m6_n=self.horses[hi].mods.entries.iter().filter(|m|m.index==6 && !m.once).count();let h=&self.horses[hi];
         let ce=self.compete_effects(hi);let h=&self.horses[hi];
         if !math::approximately(h.lane,h.prev_lane) && h.mods.apply(21,0.0)!=0.0 {
-            target+=math::pow(h.stat(2)*p.f("Skill.LaneMoveAddParam1"),p.f("Skill.LaneMoveAddParam2"));
+            if crate::envc::var("JPRACE_LANEMV_D").as_deref()==Ok("1") {target=(target as f64+((h.stat(2)*p.f("Skill.LaneMoveAddParam1")) as f64).powf(p.f("Skill.LaneMoveAddParam2") as f64)) as f32;}
+            else {target+=math::pow(h.stat(2)*p.f("Skill.LaneMoveAddParam1"),p.f("Skill.LaneMoveAddParam2"));}
             if lc {chain.push(("lanemv".into(),target.to_bits()));}
         }
         if crate::envc::var("JPRACE_LOG_TGTBITS").ok().and_then(|x|x.parse::<usize>().ok())==Some(hi) {
@@ -2862,14 +2976,31 @@ impl<'a> Simulator<'a> {
             eprintln!("tgtbits tick={} sec={} tb={:08x} mode={} mul={:08x} before_slope={:08x} slope={} pow={:08x} up={:08x} m6={:08x} secbase={:08x} rb={:08x} forcein={:08x} fi_on={}",(self.time/0.0666).round() as i64,section,h.tgt_base.to_bits(),h.keep.mode,h.keep.multiply.to_bits(),target.to_bits(),h.slope,h.stat(2).to_bits(),up.to_bits(),h.mods.apply(6,0.0).to_bits(),h.section_base[section].to_bits(),self.race_base().to_bits(),h.force_in.to_bits(),
                 self.course.empty_in_move && h.phase==0 && h.lane>=p.f("forceInMoveLaneThreshold") && (if h.lane_off_ro && let Ok(m)=crate::envc::var("JPRACE_RO_FI2") {match m.as_str() {"out"=>h.outside.is_some(),"both"=>h.inside.is_some()||h.outside.is_some(),"none"=>false,"outrail"=>h.outside.is_some()||h.lane>=h.lane_max-0.0001,_=>h.inside.is_some()}} else {(h.inside.is_some() && !(h.lane_off_ro && crate::envc::var_os("JPRACE_RO_FIMODE").is_some())) || h.fi_in || h.lane<=h.lane_min+0.0001 || (h.lane_off_ro && (crate::envc::var("JPRACE_RO_FI").as_deref()==Ok("always") || h.fi_latch.get()))}));
         }
-        if h.slope>0.0 {
-            target+=up_slope(h.slope,p.f("Slope.UpSlopeAddSpeedVal1"),h.stat(2)).min(0.0);
-        }
-        else if h.downhill {target+=(h.slope.abs()/p.f("Slope.DownSlopeAddSpeedVal2")+p.f("Slope.DownSlopeAddSpeedVal1")).max(0.0);}
+        let tgt_order=crate::envc::var("JPRACE_TGT_ORDER").unwrap_or_default();
+        let slope_term=if h.slope>0.0 {up_slope(h.slope,p.f("Slope.UpSlopeAddSpeedVal1"),h.stat(2)).min(0.0)} else if h.downhill {(h.slope.abs()/p.f("Slope.DownSlopeAddSpeedVal2")+p.f("Slope.DownSlopeAddSpeedVal1")).max(0.0)} else {0.0};
+        let has_slope=h.slope>0.0 || h.downhill;
+        if tgt_order=="cs" {target+=ce.target_speed_add;if has_slope {target+=slope_term;}}
+        else if tgt_order=="sum" {if has_slope {target+=slope_term+ce.target_speed_add;} else {target+=ce.target_speed_add;}}
+        else if tgt_order=="sumup" {if h.slope>0.0 {target+=slope_term+ce.target_speed_add;} else {if has_slope {target+=slope_term;}target+=ce.target_speed_add;}}
+        else if tgt_order=="sumdown" {if h.slope>0.0 {target+=slope_term;target+=ce.target_speed_add;} else if has_slope {target+=slope_term+ce.target_speed_add;} else {target+=ce.target_speed_add;}}
+        else if tgt_order=="f64up" {if h.slope>0.0 {target=(target as f64+slope_term as f64+ce.target_speed_add as f64) as f32;} else {if has_slope {target+=slope_term;}target+=ce.target_speed_add;}}
+        else if has_slope {target+=slope_term;}
         if lc && (h.slope!=0.0 || h.downhill) {
             let term=if h.slope>0.0 {up_slope(h.slope,p.f("Slope.UpSlopeAddSpeedVal1"),h.stat(2)).min(0.0)} else if h.downhill {(h.slope.abs()/p.f("Slope.DownSlopeAddSpeedVal2")+p.f("Slope.DownSlopeAddSpeedVal1")).max(0.0)} else {0.0};
             chain.push((format!("slope{}d{}t{:08x}",h.slope,h.downhill,term.to_bits()),target.to_bits()));}
-        target+=ce.target_speed_add;if ftop=="ce" {target+=early_f;}if lc && ce.target_speed_add!=0.0 {chain.push((format!("ce{:08x}",ce.target_speed_add.to_bits()),target.to_bits()));}
+        let ce_pos=crate::envc::var("JPRACE_CE_POS").unwrap_or_default();
+        static CE_SPLIT:std::sync::OnceLock<u8>=std::sync::OnceLock::new();
+        let ce_split=*CE_SPLIT.get_or_init(||match crate::envc::var("JPRACE_CE_SPLIT").as_deref() {Ok("sum")=>0,Ok("tf")=>1,_=>2});
+        if tgt_order.is_empty() && ce_pos.is_empty() {
+            if crate::envc::var("JPRACE_CE_D").as_deref()==Ok("1") && ce.target_speed_add!=0.0 {target=(target as f64+ce.target_speed_add_d) as f32;} else {
+                match ce_split {
+                    0=>target+=ce.target_speed_add,
+                    1=>{target+=ce.top_speed_add;target+=ce.fight_speed_add;},
+                    _=>{target+=ce.fight_speed_add;target+=ce.top_speed_add;},
+                }
+            }
+        }
+        if !fs_v1 && ftop=="ce" {target+=early_f;}if lc && ce.target_speed_add!=0.0 {chain.push((format!("ce{:08x}",ce.target_speed_add.to_bits()),target.to_bits()));}
         if fs_enabled() && dt>0.0 && !self.horses[hi].finished {
             let tick=(self.time/dt).round() as i64;
             let oracle=crate::envc::var_os("JPRACE_FS_ORACLE").is_some();
@@ -2880,7 +3011,7 @@ impl<'a> Simulator<'a> {
                 let elig=self.horses[hi].input.speed as f32>=Tree(self.p().get("ExtraTargetSpeed")).f("ExtraTargetRawSpeedParam");
                 let in_spurt={let h=&self.horses[hi];let st=if h.j_start>0.0 {if crate::envc::var("JPRACE_RECALC_JSTART").as_deref()==Ok("latest") {h.j_start} else {h.j_start.min(h.spurt_start)}} else {h.spurt_start};h.spurt_start>0.0 && h.spurt_result&12==0 && h.distance>=st};
                 if elig && in_spurt {
-                    self.horses[hi].fs_j=j;let eacc=crate::envc::var("JPRACE_FS_EACC").as_deref()==Ok("1") && self.horses[hi].rafs_on;if !eacc && (crate::envc::var("JPRACE_FS_JX").as_deref()!=Ok("1") || !(self.horses[hi].rafs_on || self.horses[hi].fs_pending)) {target+=j;if lc {chain.push((format!("j{:08x}",j.to_bits()),target.to_bits()));}}
+                    self.horses[hi].fs_j=j;let eacc=crate::envc::var("JPRACE_FS_EACC").as_deref()==Ok("1") && self.horses[hi].rafs_on;if !arch_j_added && !eacc && (crate::envc::var("JPRACE_FS_JX").as_deref()!=Ok("1") || !(self.horses[hi].rafs_on || self.horses[hi].fs_pending)) {target+=j;if lc {chain.push((format!("j{:08x}",j.to_bits()),target.to_bits()));}}
                     let h=&self.horses[hi];let p=self.p();
                     let slope=if h.slope>0.0 && crate::envc::var("JPRACE_FS_UP").as_deref()!=Ok("0") {up_slope(h.slope,p.f("Slope.UpSlopeAddSpeedVal1"),h.stat(2)).min(0.0)}
                         else if h.downhill && crate::envc::var_os("JPRACE_FS_DOWN").is_some() {(h.slope.abs()/p.f("Slope.DownSlopeAddSpeedVal2")+p.f("Slope.DownSlopeAddSpeedVal1")).max(0.0)} else {0.0};
@@ -2928,11 +3059,47 @@ impl<'a> Simulator<'a> {
                         let pex=if m48.is_empty() || m48=="pow" {h.mods.apply(26,0.0)*x.f("ExtraPowerAdjustCoef")} else {0.0};
                         let a=((h.stat(2)+pex)*p.f("AccelPowCoefSqrt")).sqrt()*p.f(if up {"accelPowCoefUpSlope"} else {"accelPowCoef"})*h.ground_coef*h.dist_power*p.f(&format!("Speed.{array}.{}",PHASE_NAMES[h.phase.min(3)]));
                         let a=if m.contains("sk") {h.mods.apply(10,a)} else {a};
+                        if crate::envc::var("JPRACE_LOG_FSRIN").ok().and_then(|v|v.parse::<usize>().ok())==Some(hi) {
+                            let m26s:Vec<String>=h.mods.entries.iter().filter(|m|m.index==26).map(|m|format!("{:08x}",m.value.to_bits())).collect();
+                            eprintln!("fsrin m26=[{}]",m26s.join(","));
+                            eprintln!("fsrin tick={} pow={:08x} pex={:08x} sq={:08x} base={:08x} gr={:08x} dp={:08x} ph={:08x} sup={:08x} L={:08x} ex={:08x} a={:08x}",(self.time/dt).round() as i64,h.stat(2).to_bits(),pex.to_bits(),p.f("AccelPowCoefSqrt").to_bits(),p.f(if up {"accelPowCoefUpSlope"} else {"accelPowCoef"}).to_bits(),
+                                h.ground_coef.to_bits(),h.dist_power.to_bits(),p.f(&format!("Speed.{array}.{}",PHASE_NAMES[h.phase.min(3)])).to_bits(),x.f("ExtraAccelSuppressCoef").to_bits(),self.course.distance.to_bits(),x.f("ExtraAccelExponent").to_bits(),a.to_bits());
+                        }
                         if m48=="add" {
                             a*x.f("ExtraAccelSuppressCoef")*(self.course.distance/1000.0).powx(-x.f("ExtraAccelExponent"))*g("JPRACE_FS_RK",1.0)
                                 +h.mods.apply(26,0.0)*crate::envc::var("JPRACE_FS_48H").ok().and_then(|o|o.split(',').find_map(|kv|kv.split_once('=').filter(|(a,_)|a.parse::<usize>().ok()==Some(hi)).and_then(|(_,v)|v.parse::<f32>().ok()))).unwrap_or(g("JPRACE_FS_48K",0.1))
                         } else if m48=="coef" {
                             a*(x.f("ExtraAccelSuppressCoef")+h.mods.apply(26,0.0))*(self.course.distance/1000.0).powx(-x.f("ExtraAccelExponent"))*g("JPRACE_FS_RK",1.0)
+                        } else if fsr_f64()==1 {
+                            ((a*x.f("ExtraAccelSuppressCoef")) as f64*((self.course.distance/1000.0) as f64).powf(-x.f("ExtraAccelExponent") as f64)) as f32
+                        } else if fsr_f64()==5 {
+                            let sq=((h.stat(2)+pex)*p.f("AccelPowCoefSqrt")).sqrt() as f64;
+                            (sq*p.f(if up {"accelPowCoefUpSlope"} else {"accelPowCoef"}) as f64*h.ground_coef as f64*h.dist_power as f64*p.f(&format!("Speed.{array}.{}",PHASE_NAMES[h.phase.min(3)])) as f64
+                                *x.f("ExtraAccelSuppressCoef") as f64*(self.course.distance as f64/1000.0).powf(-x.f("ExtraAccelExponent") as f64)) as f32
+                        } else if fsr_f64()==10 || fsr_f64()==11 || fsr_f64()==12 {
+                            let k=if let Some(kb)=crate::envc::var("JPRACE_FSR_K").ok().and_then(|v|u32::from_str_radix(&v,16).ok()) {f32::from_bits(kb)}
+                                else if fsr_f64()==12 {x.f("ExtraAccelSuppressCoef")/((self.course.distance as f64/1000.0).powf(x.f("ExtraAccelExponent") as f64) as f32)}
+                                else if fsr_f64()==10 {(x.f("ExtraAccelSuppressCoef") as f64*(self.course.distance as f64/1000.0).powf(-x.f("ExtraAccelExponent") as f64)) as f32}
+                                else {x.f("ExtraAccelSuppressCoef")*((self.course.distance as f64/1000.0).powf(-x.f("ExtraAccelExponent") as f64) as f32)};
+                            a*k
+                        } else if fsr_f64()==7 {
+                            a*((self.course.distance as f64/1000.0).powf(-x.f("ExtraAccelExponent") as f64) as f32)*x.f("ExtraAccelSuppressCoef")
+                        } else if fsr_f64()==8 {
+                            a*(self.course.distance/1000.0).powx(-x.f("ExtraAccelExponent"))*x.f("ExtraAccelSuppressCoef")
+                        } else if fsr_f64()==9 {
+                            a*x.f("ExtraAccelSuppressCoef")*((self.course.distance as f64/1000.0).powf(-x.f("ExtraAccelExponent") as f64) as f32)
+                        } else if fsr_f64()==6 {
+                            let sq=((h.stat(2)+pex)*p.f("AccelPowCoefSqrt")).sqrt() as f64;
+                            let phd=format!("{}",p.f(&format!("Speed.{array}.{}",PHASE_NAMES[h.phase.min(3)]))).parse::<f64>().unwrap_or(0.0);
+                            (sq*p.f(if up {"accelPowCoefUpSlope"} else {"accelPowCoef"}) as f64*h.ground_coef as f64*h.dist_power as f64*phd
+                                *x.f("ExtraAccelSuppressCoef") as f64*(self.course.distance as f64/1000.0).powf(-x.f("ExtraAccelExponent") as f64)) as f32
+                        } else if fsr_f64()==3 {
+                            let ad=(((h.stat(2)+pex)*p.f("AccelPowCoefSqrt")) as f64).sqrt()*p.f(if up {"accelPowCoefUpSlope"} else {"accelPowCoef"}) as f64*h.ground_coef as f64*h.dist_power as f64*p.f(&format!("Speed.{array}.{}",PHASE_NAMES[h.phase.min(3)])) as f64;
+                            (ad*x.f("ExtraAccelSuppressCoef") as f64*((self.course.distance/1000.0) as f64).powf(-x.f("ExtraAccelExponent") as f64)) as f32
+                        } else if fsr_f64()==4 {
+                            (a as f64*x.f("ExtraAccelSuppressCoef") as f64*(self.course.distance/1000.0).powx(-x.f("ExtraAccelExponent")) as f64) as f32
+                        } else if fsr_f64()==2 {
+                            (a as f64*x.f("ExtraAccelSuppressCoef") as f64*((self.course.distance/1000.0) as f64).powf(-x.f("ExtraAccelExponent") as f64)) as f32
                         } else {
                             a*x.f("ExtraAccelSuppressCoef")*(self.course.distance/1000.0).powx(-x.f("ExtraAccelExponent"))*g("JPRACE_FS_RK",1.0)
                         }
@@ -2948,6 +3115,8 @@ impl<'a> Simulator<'a> {
                     let (sp,mp,sf,mf)=(e.f("ExtraTargetSpeedStartParam"),e.f("ExtraTargetSpeedMaxParam"),e.f("ExtraTargetSpeedStartFoundation"),e.f("ExtraTargetSpeedMaxFoundation"));
                     sf+(mf-sf)*((h.input.speed as f32-sp)/(mp-sp)).clamp(0.0,1.0)};
                 let r=if r!=0.0 {crate::envc::var("JPRACE_FS_RULP").ok().and_then(|o|o.split(',').find_map(|kv|kv.split_once(':').filter(|(a,_)|a.parse::<usize>().ok()==Some(hi)).and_then(|(_,v)|v.parse::<i32>().ok()))).map_or(r,|k|f32::from_bits((r.to_bits() as i32+k) as u32))} else {r};
+                let r=if let Ok(o)=crate::envc::var("JPRACE_FSR_SET") {o.split(',').find_map(|e|{let f:Vec<&str>=e.split(':').collect();
+                    (f.len()==3 && f[0].parse::<usize>().ok()==Some(hi) && u32::from_str_radix(f[1],16).ok()==Some(r.to_bits())).then(||f32::from_bits(u32::from_str_radix(f[2],16).unwrap_or(r.to_bits())))}).unwrap_or(r)} else {r};
                 let h=&mut self.horses[hi];h.fs_r=r;
                 let fxm=crate::envc::var("JPRACE_FSX_ACC").ok();let fxp=h.fs_x;
                 if crate::envc::var("JPRACE_FS_RFIRST").as_deref()!=Ok("0") {
@@ -2963,7 +3132,27 @@ impl<'a> Simulator<'a> {
                     }
                     if h.fs_n==0 {h.fs_n=1;if let Some(k)=crate::envc::var("JPRACE_FS_XOFF").ok().and_then(|o|o.split(',').find_map(|kv|kv.split_once(':').filter(|(a,_)|a.parse::<usize>().ok()==Some(hi)).and_then(|(_,v)|v.parse::<f32>().ok()))) {h.fs_x+=k*1e-9;}}
                 }
-                if crate::envc::var("JPRACE_FS_JX").as_deref()==Ok("1") && h.fs_j>0.0 {target+=h.fs_j+h.fs_x.min(emax);} else {
+                if fs_v1 {
+                    if arch_slb!=0.0 && !slb_added {
+                        target+=arch_slb;slb_added=true;if lc {chain.push((format!("slb{:08x}",arch_slb.to_bits()),target.to_bits()));}
+                    }
+                    let (fx_prev,fx_now)=(fxp.min(emax),h.fs_x.min(emax));
+                    if early_f>0.0 {
+                        let t0=target.min(30.0)-early_f;
+                        tparts=(t0,fx_prev);tprev=Some(t0+fx_prev);target=t0+fx_now;
+                    } else {
+                        if slb_added {
+                            target=target.min(30.0-fnd_pre);
+                        } else {
+                            let sd=crate::envc::var("JPRACE_SLB_DELAY").ok().and_then(|x|x.parse::<f32>().ok()).unwrap_or(1.0);
+                            let sv=if slb_enabled() && h.slb_on && self.time>=h.slb_t0+sd*dt-1e-4 {h.slb_v} else {0.0};
+                            target=target.min((30.0-fnd_pre)-sv);
+                        }
+                        tparts=(target,fx_prev);tprev=Some(target+fx_prev);target+=fx_now;
+                    }
+                    h.fs_tacc=[target,target];
+                    if lc {chain.push((format!("fsx{:08x}",h.fs_x.to_bits()),target.to_bits()));}
+                } else if crate::envc::var("JPRACE_FS_JX").as_deref()==Ok("1") && h.fs_j>0.0 {target+=h.fs_j+h.fs_x.min(emax);} else {
                 if let Some(c)=crate::envc::var("JPRACE_PREFS_MAX").ok().and_then(|x|x.parse::<f32>().ok()) {target=target.min(c);}
                 let fs_top=crate::envc::var("JPRACE_FS_TOP").unwrap_or_default();
                 if early_f>0.0 {target=target.min(30.0)-early_f;} else if matches!(fs_top.as_str(),"early"|"m6"|"ce") {target=target.min(30.0-fnd_pre);} else
@@ -3031,7 +3220,7 @@ impl<'a> Simulator<'a> {
                 }
             }
             let delay=crate::envc::var("JPRACE_SLB_DELAY").ok().and_then(|x|x.parse::<f32>().ok()).unwrap_or(1.0);
-            if self.horses[hi].slb_on && self.time>=self.horses[hi].slb_t0+delay*dt-1e-4 {
+            if !slb_added && self.horses[hi].slb_on && self.time>=self.horses[hi].slb_t0+delay*dt-1e-4 {
                 match fx_last.as_deref() {
                     Some("slbsum")=>{target+=fx_add+self.horses[hi].slb_v;fx_add=0.0;},
                     Some("slbkeep")=>{target=((target as f64+fx_add as f64)+self.horses[hi].slb_v as f64) as f32;fx_add=0.0;},
@@ -3040,6 +3229,7 @@ impl<'a> Simulator<'a> {
                 }if lc {chain.push((format!("slb{:08x}",self.horses[hi].slb_v.to_bits()),target.to_bits()));}}
         }
         if matches!(fx_last.as_deref(),Some("slb"|"slbsum"|"slbkeep")) {target+=fx_add;}
+        if ce_pos=="aslb" {target+=ce.target_speed_add;if let Some(t)=tprev.as_mut() {*t+=ce.target_speed_add;}if lc && ce.target_speed_add!=0.0 {chain.push((format!("ce{:08x}",ce.target_speed_add.to_bits()),target.to_bits()));}}
         let h=&self.horses[hi];
         let shift=crate::envc::var("JPRACE_MODE_SHIFT").ok().and_then(|x|x.parse::<f32>().ok()).unwrap_or(-1.0)*dt;
         let mut madd=0.0f32;
@@ -3051,9 +3241,11 @@ impl<'a> Simulator<'a> {
             if oh!=hi || !(self.time>=st-shift-1e-3 && self.time<en-shift+eshift-1e-3) {continue;}
             let mult=if crate::envc::var("JPRACE_MINOR_DYN").as_deref()==Ok("1") {self.jp_minor_mult(hi,kind,(self.time/dt).round() as i64)}
                 else {self.minor_ev.iter().find(|e|e.0==oh && e.1==kind && e.2==st).map_or(1.0,|e|e.3)};
-            let v=self.jp_mode_speed(hi,kind)*mult;target+=v;madd+=v;if let Some(t)=tprev.as_mut() {*t+=v;}if lc {chain.push((format!("mode{}:{:08x}",kind,v.to_bits()),target.to_bits()));}
+            let v=self.jp_mode_speed(hi,kind)*mult;madd+=v;
+            if !mode_first {target+=v;if let Some(t)=tprev.as_mut() {*t+=v;}if lc {chain.push((format!("mode{}:{:08x}",kind,v.to_bits()),target.to_bits()));}}
         }
         if fx_last.as_deref()==Some("mode") {target+=fx_add;}
+        if ce_pos=="last" {target+=ce.target_speed_add;if let Some(t)=tprev.as_mut() {*t+=ce.target_speed_add;}if lc && ce.target_speed_add!=0.0 {chain.push((format!("ce{:08x}",ce.target_speed_add.to_bits()),target.to_bits()));}}
         let h=&mut self.horses[hi];h.mode_add=madd;let h=&self.horses[hi];
         if let Ok(x)=crate::envc::var("JPRACE_TRACE_T") && x.parse::<usize>().ok()==Some(hi) {
             eprintln!("tgt t={:.4} sec={} secspd={:.5} keep={} mul={:.5} forcein={:.5} cond_in={} m6={:.5} lanemv={} slope={} down={} ce={:.5} final={:.5}",self.time,section,h.section_speed[section],h.keep.mode,h.keep.multiply,h.force_in,
@@ -3139,7 +3331,7 @@ impl<'a> Simulator<'a> {
             if h.hp<=0.0 {rate.max(p.f("declRateHpZero"))} else {rate}
         };
         self.move_lane(hi,dt,false);
-        let h=&mut self.horses[hi];let prev_target=h.target_speed;h.target_speed=target;h.tgt_nohp=tgt_nohp;
+        let h=&mut self.horses[hi];let prev_target=h.target_speed;h.target_speed=target;h.tgt_nohp=tgt_nohp;h.tgt_hp0=h.hp<=0.0;
         h.goal_tgt=-1.0;
         if h.hp<=0.0 && h.rafs_on && !h.finished && crate::envc::var("JPRACE_HP0_FS").as_deref()!=Ok("old") {
             let e=Tree(p.get("ExtraTargetSpeed"));
@@ -3160,12 +3352,25 @@ impl<'a> Simulator<'a> {
         if v<target {v=if sf.contains('a') {accel.mul_add(dt,v)}
             else if acc_sep && acc_fs!=0.0 && fpin.is_some() && prev_target>0.0 {let v1=(v+accel*dt).min(prev_target)+acc_fs*dt;if fpin.as_deref()==Some("2") {v1.min(f32::MAX)} else {v1}}
             else if acc_sep && acc_fs!=0.0 && post {(v+accel*dt).min(target)+acc_fs*dt}
+            else if acc_sep && acc_fs!=0.0 && h.fs_cap>0.0 && fs_capprev() && let Ok(m)=crate::envc::var("JPRACE_FS_ACCV") {
+                let hit=v+accel*dt>=h.fs_cap;let was=h.fs_pin;h.fs_pin=hit;
+                let du=(v.to_bits() as i64-h.fs_cap.to_bits() as i64).abs();
+                match m.as_str() {
+                    "in1"=>(v+(accel*dt+acc_fs*dt)).min(h.fs_cap+acc_fs*dt),
+                    "in2"=>(v+(accel+acc_fs)*dt).min(h.fs_cap+acc_fs*dt),
+                    "in3"=>if v+accel*dt>=h.fs_cap {h.fs_cap+acc_fs*dt} else {v+(accel*dt+acc_fs*dt)},
+                    "in4"=>if v+accel*dt>=h.fs_cap {h.fs_cap+acc_fs*dt} else {v+(accel+acc_fs)*dt},
+                    "up"=>(v+accel*dt).min(h.fs_cap.max(v))+acc_fs*dt,
+                    "acc" if hit && was=>v+acc_fs*dt,
+                    x if x.starts_with("acc") && x.len()>3 && hit && was && du<=x[3..].parse::<i64>().unwrap_or(1)=>v+acc_fs*dt,
+                    _=>(v+accel*dt).min(h.fs_cap)+acc_fs*dt}
+            }
             else if acc_sep && acc_fs!=0.0 && h.fs_cap>0.0 && fs_capprev() {((v+accel*dt).min(h.fs_cap)+acc_fs*dt).min(if fs_capprev_fin() {target} else {f32::MAX})}
-            else if acc_sep && acc_fs!=0.0 {match crate::envc::var("JPRACE_ACC_ORDER").as_deref() {Ok("rf")=>(v+acc_fs*dt)+accel*dt,Ok("in")=>v+(accel*dt+acc_fs*dt),_=>(v+accel*dt)+acc_fs*dt}} else {v+accel*dt}.min(if ((fpin.as_deref()==Some("2") || post) && acc_fs!=0.0) || (acc_sep && acc_fs!=0.0 && h.fs_cap>0.0 && fs_capnomin()) {f32::MAX} else {target});}
+            else if acc_sep && acc_fs!=0.0 {match crate::envc::var("JPRACE_ACC_ORDER").as_deref() {Ok("rf")=>(v+acc_fs*dt)+accel*dt,Ok("in")=>v+(accel*dt+acc_fs*dt),_=>(v+accel*dt)+acc_fs*dt}} else if acc_f64() {(v as f64+accel as f64*dt as f64) as f32} else {v+accel*dt}.min(if ((fpin.as_deref()==Some("2") || post) && acc_fs!=0.0) || (acc_sep && acc_fs!=0.0 && h.fs_cap>0.0 && fs_capnomin()) {f32::MAX} else {target});}
         else if v>target {let dr=rate*p.f("declBase")-dsub;
             let db=p.f("declBase");
             let dn=crate::envc::var("JPRACE_DECL_NOFS").ok();
-            v=if dsub==0.0 && dn.is_some() {match dn.as_deref() {Some("E")=>v-rate*(db*dt),Some("F")=>(v as f64-(rate*db) as f64*dt as f64) as f32,Some("H")=>v-(rate*(db*dt)),_=>v+(-rate*db)*dt}.max(target)} else {
+            v=if dsub==0.0 && dec_f64() {((v as f64-rate as f64*db as f64*dt as f64) as f32).max(target)} else if dsub==0.0 && dn.is_some() {match dn.as_deref() {Some("E")=>v-rate*(db*dt),Some("F")=>(v as f64-(rate*db) as f64*dt as f64) as f32,Some("H")=>v-(rate*(db*dt)),_=>v+(-rate*db)*dt}.max(target)} else {
             match crate::envc::var("JPRACE_DECL_FORM").as_deref() {
                 Ok("B")=>v-rate*db*dt+dsub*dt, Ok("D")=>v-(rate*db*dt-dsub*dt), Ok("E")=>v-rate*(db*dt)+dsub*dt,
                 Ok("A")=>if sf.contains('d') {(-dr).mul_add(dt,v)} else {v-dr*dt},
@@ -3236,6 +3441,9 @@ impl<'a> Simulator<'a> {
         let m23=if let Ok(x)=crate::envc::var("JPRACE_M23_ULP") && let Some((a,u))=x.split_once(':') && a.parse::<usize>().ok()==Some(hi) && m23!=0.0 {f32::from_bits((m23.to_bits() as i64+u.parse::<i64>().unwrap_or(0)) as u32)} else {m23};
         h.speed=if crate::envc::var("JPRACE_BLOCK_CAP").as_deref()==Ok("self") {(m23+h.mods.apply(5,0.0)+v.min(max)).max(h.min_speed)}
             else if spd_seq() {h.mods.apply(5,h.mods.apply(23,v)).clamp(h.min_speed,max)}
+            else if let Ok(mx)=crate::envc::var("JPRACE_SPD_MIX") {let mut sm=0.0f32;for m in h.mods.entries.iter().filter(|m|(m.index==23 || m.index==5) && !m.once) {sm+=m.value;}
+                (if mx=="v" {v+sm} else {sm+v}).clamp(h.min_speed,max)}
+            else if spd_f64() {((m23 as f64+h.mods.apply(5,0.0) as f64+v as f64) as f32).clamp(h.min_speed,max)}
             else {(m23+h.mods.apply(5,0.0)+v).clamp(h.min_speed,max)};
         h.sens=if sens_on() && (v==target || (h.fs_cap>0.0 && v==h.fs_cap+h.fs_r*dt)) && v>0.0 {[-1i32,1].map(|k|(m23+h.mods.apply(5,0.0)+f32::from_bits((v.to_bits() as i32+k) as u32)).clamp(h.min_speed,max))} else {[0.0;2]};
         if crate::envc::var("JPRACE_LOG_SPD").ok().and_then(|x|x.parse::<usize>().ok())==Some(hi) {
@@ -3446,6 +3654,7 @@ impl<'a> Simulator<'a> {
         }
     }
     fn tick(&mut self,dt:f32) {
+        crate::modifiers::NOW.store(self.time.to_bits(),std::sync::atomic::Ordering::Relaxed);
         let prof=crate::envc::var_os("JPRACE_PROFILE").is_some();let t0=std::time::Instant::now();
         for hi in 0..self.horses.len() {
             self.around(hi);let h=&mut self.horses[hi];
@@ -3523,15 +3732,16 @@ impl<'a> Simulator<'a> {
         }
         let t1=std::time::Instant::now();
         if dt>0.0 && crate::envc::var("JPRACE_LB_PRE").as_deref()!=Ok("0") {
+            let pre_goal=crate::envc::var("JPRACE_LB_PRE_GOAL").as_deref()!=Ok("0");
             for hi in 0..self.horses.len() {
-                if self.horses[hi].finished || !self.horses[hi].mods.entries.iter().any(|m|m.index==23 && m.lb.is_some()) {continue;}
+                if (self.horses[hi].finished && !pre_goal) || !self.horses[hi].mods.entries.iter().any(|m|m.index==23 && m.lb.is_some()) {continue;}
                 let ph=self.horses[hi].phase;
-                let coefs:Vec<f32>=self.horses[hi].mods.entries.iter().map(|m|if m.index==23 {m.lb.map_or(0.0,|r|self.wiz_limit_break_coef(ph,r[3] as i32,r[4]>0.5))} else {0.0}).collect();
+                let coefs:Vec<f32>=self.horses[hi].mods.entries.iter().map(|m|if m.index==23 {m.lb.map_or(0.0,|r|if ph>=4 {0.0} else {self.wiz_limit_break_coef(ph,r[3] as i32,r[4]>0.5)})} else {0.0}).collect();
                 let fs=if self.horses[hi].rafs_on {crate::envc::var("JPRACE_FS_SKILL").ok().and_then(|x|x.parse::<f32>().ok()).unwrap_or(0.0)} else {0.0};
-                for (m,c) in self.horses[hi].mods.entries.iter_mut().zip(coefs) {if m.index==23 && let Some(r)=m.lb {m.value=lb_value(r,fs,c);}}
+                for (m,c) in self.horses[hi].mods.entries.iter_mut().zip(coefs) {if m.index==23 && let Some(r)=m.lb {m.value=lb_value(r,fs,c);m.lbb=lb_bonus(r,fs,c);}}
             }
         }
-        self.skills_pass(dt,1);self.skills_pass(dt,0);
+        self.skills_pass(dt,1);self.skills_pass(dt,0);flush_stops(&mut self.horses);
         if dt>0.0 && crate::envc::var("JPRACE_SPURT_PREPASS").as_deref()==Ok("1") {
             for hi in 0..self.horses.len() {
                 if !self.horses[hi].finished && self.horses[hi].phase>=2 && !self.horses[hi].spurt_calculated {self.spurt(hi);}
@@ -3973,9 +4183,21 @@ fn initial_lane_extra(gate:i32,lane_type:i64,half:bool)->f32 {
     }
 }
 
+fn stop_sum_on()->bool {static V:std::sync::OnceLock<bool>=std::sync::OnceLock::new();*V.get_or_init(||crate::envc::var("JPRACE_STOP_SUM").as_deref()!=Ok("0"))}
+fn flush_stops(horses:&mut [Horse]) {
+    for h in horses {if h.stop_n>0 {h.self_speed+=h.stop_sum;h.stop_sum=0.0;h.stop_n=0;}}
+}
 fn stop_effect(horses:&mut [Horse],uid:u64) {
-    for h in horses {
-        h.self_speed+=h.mods.entries.iter().filter(|m|m.owner==uid && m.index==23 && !m.once).map(|m|m.value).sum::<f32>();
+    for (hi,h) in horses.iter_mut().enumerate() {
+        if crate::envc::var_os("JPRACE_LOG_STOP").is_some() && h.mods.entries.iter().any(|m|m.owner==uid && m.index==23 && !m.once) {
+            let ms:Vec<String>=h.mods.entries.iter().filter(|m|m.index==23 && !m.once).map(|m|format!("{}{:08x}:{}",if m.owner==uid {"*"} else {""},m.value.to_bits(),m.lb.map_or("-".into(),|r|format!("{:08x}/{:08x}/{:08x}/{}/{}",r[0].to_bits(),r[1].to_bits(),r[2].to_bits(),r[3],r[4])))).collect();
+            eprintln!("stop h={} v={:08x} speed={:08x} phase={} mods={}",hi,h.self_speed.to_bits(),h.speed.to_bits(),h.phase,ms.join(","));
+        }
+        if stop_sum_on() {
+            for m in h.mods.entries.iter().filter(|m|m.owner==uid && m.index==23 && !m.once) {h.stop_sum+=m.value;h.stop_n+=1;}
+        } else {
+            h.self_speed+=h.mods.entries.iter().filter(|m|m.owner==uid && m.index==23 && !m.once).map(|m|m.value).sum::<f32>();
+        }
         h.mods.stop(uid);
     }
 }
@@ -4019,9 +4241,10 @@ pub fn slb_enabled()->bool {crate::envc::var("JPRACE_SLB").as_deref()!=Ok("0")}
 pub fn fs_enabled()->bool {crate::envc::var("JPRACE_FS").as_deref()!=Ok("0")}
 pub fn up_slope(slope:f32,v1:f32,pow:f32)->f32 {
     static M:std::sync::OnceLock<u8>=std::sync::OnceLock::new();
-    match *M.get_or_init(||match crate::envc::var("JPRACE_UPSLOPE").as_deref() {Ok("mul")=>1,_=>0}) {1=>-slope.abs()*v1/pow,_=>-slope.abs()*(v1/pow)}
+    match *M.get_or_init(||match crate::envc::var("JPRACE_UPSLOPE").as_deref() {Ok("mul")=>1,Ok("f64")=>2,Ok("f64d")=>3,_=>0}) {1=>-slope.abs()*v1/pow,2=>(-(slope.abs() as f64)*v1 as f64/pow as f64) as f32,3=>(-(slope.abs() as f64)*(v1 as f64/pow as f64)) as f32,_=>-slope.abs()*(v1/pow)}
 }
 pub fn f32m(c:char)->bool {static S:std::sync::OnceLock<String>=std::sync::OnceLock::new();S.get_or_init(||crate::envc::var("JPRACE_F32").unwrap_or_else(|_|"mslMWqawhxib".into())).contains(c)}
+
 
 fn load_rafs_oracle()->Vec<(usize,f32)> {
     let Ok(path)=crate::envc::var("JPRACE_FS_FILE").or_else(|_|crate::envc::var("JPRACE_ORACLE")) else {return vec![]};
@@ -4050,11 +4273,33 @@ fn fs_capprev()->bool {fs_capprev_mode()!=0}
 fn fs_capprev_fin()->bool {fs_capprev_mode()==2}
 fn fs_capdec()->bool {matches!(fs_capprev_mode(),3|4)}
 fn fs_capnomin()->bool {matches!(fs_capprev_mode(),4|5)}
+fn fs_arch_v1()->bool {static V:std::sync::OnceLock<bool>=std::sync::OnceLock::new();*V.get_or_init(||crate::envc::var("JPRACE_FS_ARCH").as_deref()!=Ok("old"))}
 
 fn spd_seq()->bool {static V:std::sync::OnceLock<bool>=std::sync::OnceLock::new();*V.get_or_init(||crate::envc::var("JPRACE_SPD_SEQ").as_deref()==Ok("1"))}
 
-fn lb_value(r:[f32;5],fs:f32,c:f32)->f32 {
+fn acc_f64()->bool {static V:std::sync::OnceLock<bool>=std::sync::OnceLock::new();*V.get_or_init(||crate::envc::var("JPRACE_ACC_F64").as_deref()==Ok("1"))}
+fn dec_f64()->bool {static V:std::sync::OnceLock<bool>=std::sync::OnceLock::new();*V.get_or_init(||crate::envc::var("JPRACE_DEC_F64").as_deref()==Ok("1"))}
+fn spd_f64()->bool {static V:std::sync::OnceLock<bool>=std::sync::OnceLock::new();*V.get_or_init(||crate::envc::var("JPRACE_SPD_F64").as_deref()==Ok("1"))}
+fn spmax_gd()->u8 {static V:std::sync::OnceLock<u8>=std::sync::OnceLock::new();*V.get_or_init(||crate::envc::var("JPRACE_SPMAX_GD").ok().and_then(|x|x.parse().ok()).unwrap_or(0))}
+fn fsr_f64()->u8 {static V:std::sync::OnceLock<u8>=std::sync::OnceLock::new();*V.get_or_init(||match crate::envc::var("JPRACE_FSR_F64").as_deref() {Ok("0")=>0,Ok("1")=>1,Ok("2")=>2,Ok("3")=>3,Ok("4")=>4,Ok("5")=>5,Ok("6")=>6,Ok("7")=>7,Ok("8")=>8,Ok("9")=>9,Ok("10")=>10,Ok("11")=>11,_=>12})}
+fn mode_f64()->u8 {static V:std::sync::OnceLock<u8>=std::sync::OnceLock::new();*V.get_or_init(||match crate::envc::var("JPRACE_MODE_F64").as_deref() {Ok("0")=>0,Ok("1")=>1,_=>2})}
+fn lb_form()->u8 {
     static V:std::sync::OnceLock<u8>=std::sync::OnceLock::new();
-    match *V.get_or_init(||match crate::envc::var("JPRACE_LB_FORM").as_deref() {Ok("old")=>0,_=>1}) {
-        1=>r[0]+r[0]*(r[1]+fs)*c*r[2], _=>r[0]*(1.0+(r[1]+fs)*c*r[2])}
+    *V.get_or_init(||match crate::envc::var("JPRACE_LB_FORM").as_deref() {Ok("old")=>0,Ok("flat")=>1,Ok("f64")=>2,Ok("f64d")=>3,Ok("grp2")=>5,Ok("grp3")=>6,_=>4})
+}
+fn lb_bonus(r:[f32;5],fs:f32,c:f32)->f32 {
+    match lb_form() {
+        4=>r[0]*(((r[1]+fs)*c)*r[2]),
+        5=>r[0]*((r[1]+fs)*(c*r[2])),
+        6=>(r[0]*((r[1]+fs)*c))*r[2],
+        _=>r[0]*(r[1]+fs)*c*r[2],
+    }
+}
+fn lb_value(r:[f32;5],fs:f32,c:f32)->f32 {
+    match lb_form() {
+        1|4|5|6=>r[0]+lb_bonus(r,fs,c),
+        2=>(r[0] as f64*(1.0+(r[1]+fs) as f64*c as f64*r[2] as f64)) as f32,
+        3=>(r[0] as f64+r[0] as f64*(r[1]+fs) as f64*c as f64*r[2] as f64) as f32,
+        _=>r[0]*(1.0+(r[1]+fs)*c*r[2]),
+    }
 }

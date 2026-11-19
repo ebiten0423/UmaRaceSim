@@ -33,7 +33,7 @@ impl<'a> Tree<'a> {
         v
     }
     pub fn f(&self, path: &str) -> f32 {
-        thread_local!(static CACHE: std::cell::RefCell<HashMap<usize, HashMap<String, f32>>> = Default::default());
+        thread_local!(static CACHE: std::cell::RefCell<HashMap<usize, HashMap<String, f32, FxBuild>, FxBuild>> = Default::default());
         let root = self.0 as *const Value as usize;
         if let Some(v) = CACHE.with(|c| c.borrow().get(&root).and_then(|m| m.get(path)).copied()) { return v; }
         let v = f32_of(self.get(path));
@@ -89,21 +89,58 @@ impl Assets {
     }
 }
 
+#[derive(Default, Clone, Copy)]
+pub struct Fx(u64);
+impl std::hash::Hasher for Fx {
+    fn finish(&self) -> u64 { self.0 }
+    #[inline] fn write(&mut self, b: &[u8]) {
+        for c in b.chunks(8) { let mut v = [0u8; 8]; v[..c.len()].copy_from_slice(c); self.add(u64::from_le_bytes(v)); }
+    }
+    #[inline] fn write_u8(&mut self, i: u8) { self.add(i as u64); }
+    #[inline] fn write_u32(&mut self, i: u32) { self.add(i as u64); }
+    #[inline] fn write_u64(&mut self, i: u64) { self.add(i); }
+    #[inline] fn write_usize(&mut self, i: usize) { self.add(i as u64); }
+}
+impl Fx { #[inline] fn add(&mut self, v: u64) { self.0 = (self.0.rotate_left(5) ^ v).wrapping_mul(0x517c_c1b7_2722_0a95); } }
+pub type FxBuild = std::hash::BuildHasherDefault<Fx>;
+
 pub struct Master {
     pub tables: HashMap<String, Vec<HashMap<String, Value>>>,
+    index: std::sync::RwLock<HashMap<(String, String), std::sync::Arc<HashMap<i64, usize, FxBuild>>, FxBuild>>,
 }
 
 impl Master {
     pub fn load(path: &str) -> Result<Self, String> {
         let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
-        let tables = serde_json::from_slice(&bytes).map_err(|e| format!("{path}: {e}"))?;
-        Ok(Master { tables })
+        let mut tables: HashMap<String, Vec<HashMap<String, Value>>> = serde_json::from_slice(&bytes).map_err(|e| format!("{path}: {e}"))?;
+        let patch = std::path::Path::new(path).with_file_name("master_patch.json");
+        if let Ok(pb) = std::fs::read(&patch) {
+            let pt: HashMap<String, Vec<HashMap<String, Value>>> = serde_json::from_slice(&pb).map_err(|e| format!("{}: {e}", patch.display()))?;
+            for (t, rows) in pt {
+                let dst = tables.entry(t).or_default();
+                for r in rows {
+                    let id = r.get("id").and_then(|v| v.as_i64());
+                    if id.is_none() || !dst.iter().any(|x| x.get("id").and_then(|v| v.as_i64()) == id) { dst.push(r); }
+                }
+            }
+        }
+        Ok(Master { tables, index: Default::default() })
+    }
+    fn index_of(&self, t: &str, key: &str) -> std::sync::Arc<HashMap<i64, usize, FxBuild>> {
+        if let Some(ix) = self.index.read().unwrap().get(&(t.to_string(), key.to_string())) { return ix.clone(); }
+        let mut ix: HashMap<i64, usize, FxBuild> = HashMap::default();
+        for (i, r) in self.rows(t).iter().enumerate() {
+            if let Some(v) = r.get(key).and_then(|v| v.as_i64()) { ix.entry(v).or_insert(i); }
+        }
+        let ix = std::sync::Arc::new(ix);
+        self.index.write().unwrap().insert((t.to_string(), key.to_string()), ix.clone());
+        ix
     }
     pub fn rows(&self, t: &str) -> &Vec<HashMap<String, Value>> {
         self.tables.get(t).unwrap_or_else(|| panic!("missing table {t}"))
     }
     pub fn find(&self, t: &str, key: &str, val: i64) -> Option<&HashMap<String, Value>> {
-        self.rows(t).iter().find(|r| r.get(key).and_then(|v| v.as_i64()) == Some(val))
+        self.index_of(t, key).get(&val).map(|&i| &self.rows(t)[i])
     }
 }
 

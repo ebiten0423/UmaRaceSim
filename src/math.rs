@@ -53,7 +53,7 @@ pub fn log10(x: f32) -> f32 {
 
 fn powf_mode() -> u8 {
     static M: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
-    *M.get_or_init(|| match crate::envc::var("JPRACE_POWF").as_deref() { Ok("d") => 1, Ok("m") => 2, _ => 0 })
+    *M.get_or_init(|| match crate::envc::var("JPRACE_POWF").as_deref() { Ok("d") => 1, Ok("f") => 0, _ => 2 })
 }
 fn mpow_mode() -> u8 {
     static M: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
@@ -64,8 +64,15 @@ fn mlog_mode() -> u8 {
     *M.get_or_init(|| match crate::envc::var("JPRACE_MLOG").as_deref() { Ok("d") => 1, Ok("f") => 2, _ => 0 })
 }
 pub trait PowX { fn powx(self, y: Self) -> Self; }
+fn powf_lines() -> &'static Vec<u32> {
+    static M: std::sync::OnceLock<Vec<u32>> = std::sync::OnceLock::new();
+    M.get_or_init(|| crate::envc::var("JPRACE_POWF_LINES").map(|x| x.split(',').filter_map(|v| v.parse().ok()).collect()).unwrap_or_default())
+}
 impl PowX for f32 {
+    #[track_caller]
     fn powx(self, y: f32) -> f32 {
+        let l = powf_lines();
+        if !l.is_empty() && l.contains(&std::panic::Location::caller().line()) { return pow(self, y); }
         match powf_mode() { 1 => (self as f64).powf(y as f64) as f32, 2 => pow(self, y), _ => self.powf(y) }
     }
 }
